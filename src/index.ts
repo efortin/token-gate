@@ -40,6 +40,18 @@ async function main(): Promise<void> {
     }
   }
 
+  // Discover vision model if not configured
+  if (config.visionBackend && !config.visionBackend.model) {
+    const visionModels = await discoverModels(
+      config.visionBackend.url,
+      config.visionBackend.apiKey,
+    );
+    if (visionModels.length > 0) {
+      config.visionBackend.model = visionModels[0];
+      logger.info({model: config.visionBackend.model}, 'Using discovered vision model');
+    }
+  }
+
   const app = await buildApp({config});
   await app.listen({host: config.host, port: config.port});
 

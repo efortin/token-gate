@@ -1,7 +1,7 @@
 import type {FastifyInstance, FastifyReply} from 'fastify';
 import fp from 'fastify-plugin';
 
-import type {AnthropicRequest, AnthropicResponse} from '../types/index.js';
+import type {AnthropicRequest, AnthropicResponse, OpenAIResponse} from '../types/index.js';
 import {callBackend, streamBackend} from '../services/backend.js';
 import {
   SSE_HEADERS,
@@ -10,6 +10,8 @@ import {
   formatSseError,
   getBackendAuth,
   hasAnthropicImages,
+  anthropicToOpenAI,
+  openAIToAnthropic,
 } from '../utils/index.js';
 
 async function anthropicRoutes(app: FastifyInstance): Promise<void> {
@@ -19,14 +21,25 @@ async function anthropicRoutes(app: FastifyInstance): Promise<void> {
     const body = request.body as AnthropicRequest;
     const authHeader = request.headers.authorization;
 
-    const backend =
-      hasAnthropicImages(body) && app.config.visionBackend
-        ? app.config.visionBackend
-        : app.config.defaultBackend;
+    const useVision = hasAnthropicImages(body) && !!app.config.visionBackend;
+    const backend = useVision ? app.config.visionBackend! : app.config.defaultBackend;
 
     try {
       if (body.stream) {
-        return handleStream(app, reply, body, backend, authHeader, user, startTime);
+        return handleStream(app, reply, body, backend, useVision, authHeader, user, startTime);
+      }
+
+      // Vision backend uses OpenAI format
+      if (useVision) {
+        const openaiReq = anthropicToOpenAI(body);
+        const openaiRes = await callBackend<OpenAIResponse>(
+          `${backend.url}/v1/chat/completions`,
+          {...openaiReq, model: backend.model || body.model},
+          getBackendAuth(backend, authHeader),
+        );
+        const result = openAIToAnthropic(openaiRes, backend.model || body.model);
+        recordMetrics(app, user, backend.model, startTime, 'ok', result.usage);
+        return result;
       }
 
       const result = await callBackend<AnthropicResponse>(
@@ -51,6 +64,7 @@ async function handleStream(
   reply: FastifyReply,
   body: AnthropicRequest,
   backend: {url: string; apiKey: string; model: string},
+  useVision: boolean,
   authHeader: string | undefined,
   user: string,
   startTime: number,
@@ -58,11 +72,15 @@ async function handleStream(
   reply.raw.writeHead(200, SSE_HEADERS);
 
   try {
-    for await (const chunk of streamBackend(
-      `${backend.url}/v1/messages`,
-      {...body, model: backend.model || body.model, stream: true},
-      getBackendAuth(backend, authHeader),
-    )) {
+    // Vision backend uses OpenAI format
+    const endpoint = useVision
+      ? `${backend.url}/v1/chat/completions`
+      : `${backend.url}/v1/messages`;
+    const reqBody = useVision
+      ? {...anthropicToOpenAI(body), model: backend.model || body.model, stream: true}
+      : {...body, model: backend.model || body.model, stream: true};
+
+    for await (const chunk of streamBackend(endpoint, reqBody, getBackendAuth(backend, authHeader))) {
       reply.raw.write(chunk);
     }
     recordMetrics(app, user, backend.model, startTime, 'ok');
