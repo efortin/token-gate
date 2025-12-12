@@ -3,9 +3,26 @@ import { SSEEnricher } from '../transform/sse-enricher.js';
 import { estimateRequestTokens } from '../transform/token-counter.js';
 import { convertAnthropicToOpenAI, convertOpenAIToAnthropic } from '../transform/anthropic-to-openai.js';
 
+function isInternalBackend(url: string): boolean {
+  return url.includes('.cluster.local') || url.startsWith('http://');
+}
+
+function getAuthHeader(backend: BackendConfig, clientAuthHeader?: string): string {
+  if (isInternalBackend(backend.url)) {
+    // Internal backend: always use configured API key
+    return `Bearer ${backend.apiKey}`;
+  }
+  // External backend: forward client header (required for JWT auth via kgateway)
+  if (!clientAuthHeader) {
+    throw new Error('Authorization header required for external backend');
+  }
+  return clientAuthHeader;
+}
+
 export interface AnthropicHandlerOptions {
   backend: BackendConfig;
   onTelemetry?: (usage: Omit<TokenUsage, 'totalTokens'>) => void;
+  clientAuthHeader?: string;
 }
 
 export async function handleAnthropicRequest(
@@ -14,7 +31,9 @@ export async function handleAnthropicRequest(
 ): Promise<AnthropicResponse> {
   const startTime = Date.now();
   const requestId = crypto.randomUUID();
-  const { backend, onTelemetry } = options;
+  const { backend, onTelemetry, clientAuthHeader } = options;
+  
+  const authHeader = getAuthHeader(backend, clientAuthHeader);
 
   const useOpenAI = backend.anthropicNative === false;
 
@@ -28,7 +47,7 @@ export async function handleAnthropicRequest(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${backend.apiKey}`,
+        'Authorization': authHeader,
       },
       body: JSON.stringify(openaiRequest),
     });
@@ -47,7 +66,7 @@ export async function handleAnthropicRequest(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${backend.apiKey}`,
+        'Authorization': authHeader,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(proxyRequest),
@@ -89,7 +108,9 @@ export async function* handleAnthropicStreamingRequest(
 ): AsyncGenerator<string> {
   const startTime = Date.now();
   const requestId = crypto.randomUUID();
-  const { backend, onTelemetry } = options;
+  const { backend, onTelemetry, clientAuthHeader } = options;
+  
+  const authHeader = getAuthHeader(backend, clientAuthHeader);
 
   const estimatedInputTokens = estimateRequestTokens(request.messages);
   const enricher = new SSEEnricher({ estimatedInputTokens });
@@ -100,7 +121,7 @@ export async function* handleAnthropicStreamingRequest(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${backend.apiKey}`,
+      'Authorization': authHeader,
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify(proxyRequest),

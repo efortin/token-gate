@@ -10,12 +10,6 @@ export interface RouteHandlerContext {
 export function createAnthropicMessagesHandler(ctx: RouteHandlerContext) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     const authHeader = request.headers.authorization;
-    const apiKey = authHeader?.replace('Bearer ', '') || request.headers['x-api-key'];
-    
-    if (apiKey !== ctx.config.apiKey) {
-      reply.code(401);
-      return { error: { type: 'authentication_error', message: 'Invalid API key' } };
-    }
 
     const body = AnthropicRequestSchema.parse(request.body);
 
@@ -28,7 +22,7 @@ export function createAnthropicMessagesHandler(ctx: RouteHandlerContext) {
         });
         
         try {
-          for await (const chunk of ctx.router.handleAnthropicStreamingRequest(body)) {
+          for await (const chunk of ctx.router.handleAnthropicStreamingRequest(body, authHeader)) {
             reply.raw.write(chunk);
           }
         } catch (streamError: unknown) {
@@ -43,7 +37,7 @@ export function createAnthropicMessagesHandler(ctx: RouteHandlerContext) {
         reply.hijack();
         return;
       } else {
-        return await ctx.router.handleAnthropicRequest(body);
+        return await ctx.router.handleAnthropicRequest(body, authHeader);
       }
     } catch (error: unknown) {
       request.log.error({ err: error }, 'Anthropic request failed');
@@ -58,12 +52,6 @@ export function createAnthropicMessagesHandler(ctx: RouteHandlerContext) {
 export function createOpenAIChatHandler(ctx: RouteHandlerContext) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     const authHeader = request.headers.authorization;
-    const apiKey = authHeader?.replace('Bearer ', '');
-    
-    if (apiKey !== ctx.config.apiKey) {
-      reply.code(401);
-      return { error: { message: 'Invalid API key', type: 'invalid_request_error' } };
-    }
 
     const body = OpenAIRequestSchema.parse(request.body);
 
@@ -75,7 +63,7 @@ export function createOpenAIChatHandler(ctx: RouteHandlerContext) {
           'Connection': 'keep-alive',
         });
         
-        for await (const chunk of ctx.router.handleOpenAIStreamingRequest(body)) {
+        for await (const chunk of ctx.router.handleOpenAIStreamingRequest(body, authHeader)) {
           reply.raw.write(chunk);
         }
         
@@ -83,7 +71,7 @@ export function createOpenAIChatHandler(ctx: RouteHandlerContext) {
         reply.hijack();
         return;
       } else {
-        return await ctx.router.handleOpenAIRequest(body);
+        return await ctx.router.handleOpenAIRequest(body, authHeader);
       }
     } catch (error: unknown) {
       request.log.error({ err: error }, 'OpenAI request failed');

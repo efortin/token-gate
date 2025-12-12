@@ -27,35 +27,39 @@ export class AnthropicRouter {
     return this.telemetry.getStats();
   }
 
-  async handleAnthropicRequest(request: AnthropicRequest): Promise<AnthropicResponse> {
+  async handleAnthropicRequest(request: AnthropicRequest, clientAuthHeader?: string): Promise<AnthropicResponse> {
     const backend = this.backendSelector.select(request);
     return anthropicHandler(request, {
       backend,
       onTelemetry: (usage) => this.telemetry.record(usage),
+      clientAuthHeader,
     });
   }
 
-  async *handleAnthropicStreamingRequest(request: AnthropicRequest): AsyncGenerator<string> {
+  async *handleAnthropicStreamingRequest(request: AnthropicRequest, clientAuthHeader?: string): AsyncGenerator<string> {
     const backend = this.backendSelector.select(request);
     yield* anthropicStreamHandler(request, {
       backend,
       onTelemetry: (usage) => this.telemetry.record(usage),
+      clientAuthHeader,
     });
   }
 
-  async handleOpenAIRequest(request: OpenAIRequest): Promise<OpenAIResponse> {
+  async handleOpenAIRequest(request: OpenAIRequest, clientAuthHeader?: string): Promise<OpenAIResponse> {
     const backend = this.backendSelector.selectForOpenAI(request);
     return openaiHandler(request, {
       backend,
       onTelemetry: (usage) => this.telemetry.record(usage),
+      clientAuthHeader,
     });
   }
 
-  async *handleOpenAIStreamingRequest(request: OpenAIRequest): AsyncGenerator<string> {
+  async *handleOpenAIStreamingRequest(request: OpenAIRequest, clientAuthHeader?: string): AsyncGenerator<string> {
     const backend = this.backendSelector.selectForOpenAI(request);
     yield* openaiStreamHandler(request, {
       backend,
       onTelemetry: (usage) => this.telemetry.record(usage),
+      clientAuthHeader,
     });
   }
 }

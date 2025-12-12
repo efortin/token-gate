@@ -93,17 +93,6 @@ describe('Route Handlers', () => {
       hijack: vi.fn(),
     });
 
-    it('should return 401 for invalid API key', async () => {
-      const handler = createAnthropicMessagesHandler(ctx);
-      const request = createMockRequest({}, 'wrong-key');
-      const reply = createMockReply();
-
-      const result = await handler(request, reply as unknown as FastifyReply);
-
-      expect(reply.code).toHaveBeenCalledWith(401);
-      expect(result).toEqual({ error: { type: 'authentication_error', message: 'Invalid API key' } });
-    });
-
     it('should handle non-streaming request', async () => {
       const mockResponse = { id: 'msg_123', content: [] };
       mockRouter.handleAnthropicRequest.mockResolvedValue(mockResponse);
@@ -205,17 +194,6 @@ describe('Route Handlers', () => {
         end: vi.fn(),
       },
       hijack: vi.fn(),
-    });
-
-    it('should return 401 for invalid API key', async () => {
-      const handler = createOpenAIChatHandler(ctx);
-      const request = createMockRequest({}, 'wrong-key');
-      const reply = createMockReply();
-
-      const result = await handler(request, reply as unknown as FastifyReply);
-
-      expect(reply.code).toHaveBeenCalledWith(401);
-      expect(result).toEqual({ error: { message: 'Invalid API key', type: 'invalid_request_error' } });
     });
 
     it('should handle non-streaming request', async () => {

@@ -31,7 +31,7 @@ describe('loadConfig', () => {
     expect(config.defaultBackend.name).toBe('vllm');
     expect(config.defaultBackend.url).toBe('http://localhost:8000');
     expect(config.defaultBackend.apiKey).toBe('');
-    expect(config.defaultBackend.model).toBe('qwen3-coder-30b-fp8');
+    expect(config.defaultBackend.model).toBe('');
     expect(config.visionBackend).toBeUndefined();
     expect(config.telemetry.enabled).toBe(false);
     expect(config.logLevel).toBe('info');

@@ -1,8 +1,25 @@
 import type { BackendConfig, OpenAIRequest, OpenAIResponse, TokenUsage } from '../types/index.js';
 
+function isInternalBackend(url: string): boolean {
+  return url.includes('.cluster.local') || url.startsWith('http://');
+}
+
+function getAuthHeader(backend: BackendConfig, clientAuthHeader?: string): string {
+  if (isInternalBackend(backend.url)) {
+    // Internal backend: always use configured API key
+    return `Bearer ${backend.apiKey}`;
+  }
+  // External backend: forward client header (required for JWT auth via kgateway)
+  if (!clientAuthHeader) {
+    throw new Error('Authorization header required for external backend');
+  }
+  return clientAuthHeader;
+}
+
 export interface OpenAIHandlerOptions {
   backend: BackendConfig;
   onTelemetry?: (usage: Omit<TokenUsage, 'totalTokens'>) => void;
+  clientAuthHeader?: string;
 }
 
 export async function handleOpenAIRequest(
@@ -11,7 +28,9 @@ export async function handleOpenAIRequest(
 ): Promise<OpenAIResponse> {
   const startTime = Date.now();
   const requestId = crypto.randomUUID();
-  const { backend, onTelemetry } = options;
+  const { backend, onTelemetry, clientAuthHeader } = options;
+  
+  const authHeader = getAuthHeader(backend, clientAuthHeader);
 
   const proxyRequest = { ...request, model: backend.model };
 
@@ -19,7 +38,7 @@ export async function handleOpenAIRequest(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${backend.apiKey}`,
+      'Authorization': authHeader,
     },
     body: JSON.stringify(proxyRequest),
   });
@@ -55,7 +74,9 @@ export async function* handleOpenAIStreamingRequest(
 ): AsyncGenerator<string> {
   const startTime = Date.now();
   const requestId = crypto.randomUUID();
-  const { backend, onTelemetry } = options;
+  const { backend, onTelemetry, clientAuthHeader } = options;
+  
+  const authHeader = getAuthHeader(backend, clientAuthHeader);
 
   const proxyRequest = { ...request, model: backend.model, stream: true };
 
@@ -63,7 +84,7 @@ export async function* handleOpenAIStreamingRequest(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${backend.apiKey}`,
+      'Authorization': authHeader,
     },
     body: JSON.stringify(proxyRequest),
   });
