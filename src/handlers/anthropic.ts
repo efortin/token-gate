@@ -2,20 +2,7 @@ import type { AnthropicRequest, AnthropicResponse, BackendConfig, TokenUsage, Op
 import { SSEEnricher } from '../transform/sse-enricher.js';
 import { estimateRequestTokens } from '../transform/token-counter.js';
 import { convertAnthropicToOpenAI, convertOpenAIToAnthropic } from '../transform/anthropic-to-openai.js';
-
-function isInternalBackend(url: string): boolean {
-  return url.includes('.cluster.local') || url.startsWith('http://');
-}
-
-function getAuthHeader(backend: BackendConfig, clientAuthHeader?: string): string {
-  if (isInternalBackend(backend.url)) {
-    return `Bearer ${backend.apiKey}`;
-  }
-  if (!clientAuthHeader) {
-    throw new Error('Authorization header required for external backend');
-  }
-  return clientAuthHeader;
-}
+import { resolveAuthHeader } from '../middleware/index.js';
 
 export interface AnthropicHandlerOptions {
   backend: BackendConfig;
@@ -80,7 +67,7 @@ export async function handleAnthropicRequest(
   const requestId = crypto.randomUUID();
   const { backend, onTelemetry, clientAuthHeader } = options;
   
-  const authHeader = getAuthHeader(backend, clientAuthHeader);
+  const authHeader = resolveAuthHeader(backend, clientAuthHeader);
   const result = await callBackend(request, backend, authHeader);
 
   const hasToolCalls = result.content?.some(c => c.type === 'tool_use') || false;
@@ -113,7 +100,7 @@ export async function* handleAnthropicStreamingRequest(
   const requestId = crypto.randomUUID();
   const { backend, onTelemetry, clientAuthHeader } = options;
   
-  const authHeader = getAuthHeader(backend, clientAuthHeader);
+  const authHeader = resolveAuthHeader(backend, clientAuthHeader);
 
   const estimatedInputTokens = estimateRequestTokens(request.messages);
   const enricher = new SSEEnricher({ estimatedInputTokens });

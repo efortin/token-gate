@@ -13,7 +13,6 @@ export default defineConfig({
         'src/index.ts',
         'src/types/**',
         'src/vision/types.ts',
-        'src/transform/token-counter.ts',
       ],
       thresholds: {
         statements: 97,

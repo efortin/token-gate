@@ -1,20 +1,5 @@
 import type { BackendConfig, OpenAIRequest, OpenAIResponse, TokenUsage } from '../types/index.js';
-
-function isInternalBackend(url: string): boolean {
-  return url.includes('.cluster.local') || url.startsWith('http://');
-}
-
-function getAuthHeader(backend: BackendConfig, clientAuthHeader?: string): string {
-  if (isInternalBackend(backend.url)) {
-    // Internal backend: always use configured API key
-    return `Bearer ${backend.apiKey}`;
-  }
-  // External backend: forward client header (required for JWT auth via kgateway)
-  if (!clientAuthHeader) {
-    throw new Error('Authorization header required for external backend');
-  }
-  return clientAuthHeader;
-}
+import { resolveAuthHeader } from '../middleware/index.js';
 
 export interface OpenAIHandlerOptions {
   backend: BackendConfig;
@@ -30,7 +15,7 @@ export async function handleOpenAIRequest(
   const requestId = crypto.randomUUID();
   const { backend, onTelemetry, clientAuthHeader } = options;
   
-  const authHeader = getAuthHeader(backend, clientAuthHeader);
+  const authHeader = resolveAuthHeader(backend, clientAuthHeader);
 
   const proxyRequest = { ...request, model: backend.model };
 
@@ -76,7 +61,7 @@ export async function* handleOpenAIStreamingRequest(
   const requestId = crypto.randomUUID();
   const { backend, onTelemetry, clientAuthHeader } = options;
   
-  const authHeader = getAuthHeader(backend, clientAuthHeader);
+  const authHeader = resolveAuthHeader(backend, clientAuthHeader);
 
   const proxyRequest = { ...request, model: backend.model, stream: true };
 
