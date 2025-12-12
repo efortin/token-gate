@@ -95,6 +95,7 @@ export interface RouterConfig {
   host: string;
   apiKey: string;
   defaultBackend: BackendConfig;
+  visionBackend?: BackendConfig;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -104,5 +105,6 @@ export interface AppConfig {
   host: string;
   apiKey: string;
   defaultBackend: BackendConfig;
+  visionBackend?: BackendConfig;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }

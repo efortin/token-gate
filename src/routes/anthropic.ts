@@ -10,22 +10,35 @@ const SSE_HEADERS = {
   'Connection': 'keep-alive',
 } as const;
 
+function hasImages(body: AnthropicRequest): boolean {
+  for (const msg of body.messages) {
+    if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === 'image') return true;
+      }
+    }
+  }
+  return false;
+}
+
 async function anthropicRoutes(app: FastifyInstance): Promise<void> {
   app.post('/v1/messages', async (request, reply) => {
     const startTime = Date.now();
     const user = request.userEmail;
     const body = request.body as AnthropicRequest;
     const authHeader = request.headers.authorization;
-    const backend = app.config.defaultBackend;
+
+    const useVision = hasImages(body) && app.config.visionBackend;
+    const backend = useVision ? app.config.visionBackend! : app.config.defaultBackend;
 
     try {
       if (body.stream) {
-        return handleStream(app, reply, body, authHeader, user, startTime);
+        return handleStream(app, reply, body, backend, authHeader, user, startTime);
       }
 
       const result = await callBackend<AnthropicResponse>(
         `${backend.url}/v1/messages`,
-        {...body, model: backend.model},
+        {...body, model: backend.model || body.model},
         backend.apiKey || authHeader,
       );
 
@@ -49,17 +62,17 @@ async function handleStream(
   app: FastifyInstance,
   reply: FastifyReply,
   body: AnthropicRequest,
+  backend: {url: string; apiKey: string; model: string},
   authHeader: string | undefined,
   user: string,
   startTime: number,
 ): Promise<void> {
-  const backend = app.config.defaultBackend;
   reply.raw.writeHead(200, SSE_HEADERS);
 
   try {
     for await (const chunk of streamBackend(
       `${backend.url}/v1/messages`,
-      {...body, model: backend.model, stream: true},
+      {...body, model: backend.model || body.model, stream: true},
       backend.apiKey || authHeader,
     )) {
       reply.raw.write(chunk);

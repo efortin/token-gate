@@ -20,6 +20,7 @@ async function main(): Promise<void> {
       apiKey: rawConfig.defaultBackend.apiKey,
       model: rawConfig.defaultBackend.model,
     },
+    visionBackend: rawConfig.visionBackend,
     logLevel: rawConfig.logLevel,
   };
 
