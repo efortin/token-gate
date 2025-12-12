@@ -81,7 +81,7 @@ describe('loadConfig', () => {
 
     const config = loadConfig();
 
-    expect(config.visionBackend?.model).toBe('gpt-4-vision');
+    expect(config.visionBackend?.model).toBe('auto');
   });
 
   it('should parse port as integer', () => {

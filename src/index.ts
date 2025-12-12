@@ -11,7 +11,7 @@ import {
   createStatsHandler,
   createModelsHandler,
 } from './handlers/index.js';
-import { checkBackendHealth } from './init.js';
+import { checkBackendHealth, discoverModel, getAvailableModels } from './init.js';
 
 const logger = pino({ level: 'info' });
 
@@ -22,8 +22,38 @@ async function main() {
   logger.info('Checking backend connectivity');
   await checkBackendHealth(config.defaultBackend.url, config.defaultBackend.name);
   
+  // Auto-discover or validate default backend model
+  const availableModels = await getAvailableModels(config.defaultBackend.url, config.defaultBackend.apiKey);
+  if (availableModels.length > 0) {
+    if (!config.defaultBackend.model) {
+      config.defaultBackend.model = availableModels[0];
+      logger.info({ model: config.defaultBackend.model }, 'Using discovered model');
+    } else if (!availableModels.includes(config.defaultBackend.model)) {
+      const originalModel = config.defaultBackend.model;
+      config.defaultBackend.model = availableModels[0];
+      logger.warn({ requested: originalModel, actual: config.defaultBackend.model }, 'Model overwritten - requested model not available');
+    }
+  }
+  
   if (config.visionBackend) {
     await checkBackendHealth(config.visionBackend.url, config.visionBackend.name);
+    
+    // Auto-discover vision model if not specified
+    if (!config.visionBackend.model || config.visionBackend.model === 'auto') {
+      const discoveredModel = await discoverModel(config.visionBackend.url, config.visionBackend.apiKey);
+      if (discoveredModel) {
+        config.visionBackend.model = discoveredModel;
+        logger.info({ model: discoveredModel }, 'Using discovered vision model');
+      }
+    } else {
+      // Check if configured vision model exists
+      const visionModels = await getAvailableModels(config.visionBackend.url, config.visionBackend.apiKey);
+      if (visionModels.length > 0 && !visionModels.includes(config.visionBackend.model)) {
+        const originalModel = config.visionBackend.model;
+        config.visionBackend.model = visionModels[0];
+        logger.warn({ requested: originalModel, actual: config.visionBackend.model }, 'Vision model overwritten - requested model not available');
+      }
+    }
   }
   
   const router = new AnthropicRouter(config);
