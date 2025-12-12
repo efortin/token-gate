@@ -1,8 +1,10 @@
 import type { BackendConfig, OpenAIRequest, OpenAIResponse, TokenUsage } from '../types/index.js';
+import { resolveAuthHeader } from '../middleware/index.js';
 
 export interface OpenAIHandlerOptions {
   backend: BackendConfig;
   onTelemetry?: (usage: Omit<TokenUsage, 'totalTokens'>) => void;
+  clientAuthHeader?: string;
 }
 
 export async function handleOpenAIRequest(
@@ -11,7 +13,9 @@ export async function handleOpenAIRequest(
 ): Promise<OpenAIResponse> {
   const startTime = Date.now();
   const requestId = crypto.randomUUID();
-  const { backend, onTelemetry } = options;
+  const { backend, onTelemetry, clientAuthHeader } = options;
+  
+  const authHeader = resolveAuthHeader(backend, clientAuthHeader);
 
   const proxyRequest = { ...request, model: backend.model };
 
@@ -19,7 +23,7 @@ export async function handleOpenAIRequest(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${backend.apiKey}`,
+      'Authorization': authHeader,
     },
     body: JSON.stringify(proxyRequest),
   });
@@ -55,7 +59,9 @@ export async function* handleOpenAIStreamingRequest(
 ): AsyncGenerator<string> {
   const startTime = Date.now();
   const requestId = crypto.randomUUID();
-  const { backend, onTelemetry } = options;
+  const { backend, onTelemetry, clientAuthHeader } = options;
+  
+  const authHeader = resolveAuthHeader(backend, clientAuthHeader);
 
   const proxyRequest = { ...request, model: backend.model, stream: true };
 
@@ -63,7 +69,7 @@ export async function* handleOpenAIStreamingRequest(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${backend.apiKey}`,
+      'Authorization': authHeader,
     },
     body: JSON.stringify(proxyRequest),
   });

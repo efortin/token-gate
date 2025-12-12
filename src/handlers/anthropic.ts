@@ -1,10 +1,62 @@
-import type { AnthropicRequest, AnthropicResponse, BackendConfig, TokenUsage } from '../types/index.js';
+import type { AnthropicRequest, AnthropicResponse, BackendConfig, TokenUsage, OpenAIResponse } from '../types/index.js';
 import { SSEEnricher } from '../transform/sse-enricher.js';
 import { estimateRequestTokens } from '../transform/token-counter.js';
+import { convertAnthropicToOpenAI, convertOpenAIToAnthropic } from '../transform/anthropic-to-openai.js';
+import { resolveAuthHeader } from '../middleware/index.js';
 
 export interface AnthropicHandlerOptions {
   backend: BackendConfig;
   onTelemetry?: (usage: Omit<TokenUsage, 'totalTokens'>) => void;
+  clientAuthHeader?: string;
+}
+
+async function callBackend(
+  modifiedRequest: AnthropicRequest,
+  backend: BackendConfig,
+  authHeader: string
+): Promise<AnthropicResponse> {
+  const useOpenAI = backend.anthropicNative === false;
+  
+  if (useOpenAI) {
+    const openaiRequest = convertAnthropicToOpenAI(modifiedRequest);
+    openaiRequest.model = backend.model;
+
+    const response = await fetch(`${backend.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': authHeader,
+      },
+      body: JSON.stringify(openaiRequest),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Backend error: ${response.status} ${error}`);
+    }
+
+    const openaiResult = await response.json() as OpenAIResponse;
+    return convertOpenAIToAnthropic(openaiResult, modifiedRequest.model);
+  } else {
+    const proxyRequest = { ...modifiedRequest, model: backend.model };
+
+    const response = await fetch(`${backend.url}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': authHeader,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(proxyRequest),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Backend error: ${response.status} ${error}`);
+    }
+
+    return await response.json() as AnthropicResponse;
+  }
 }
 
 export async function handleAnthropicRequest(
@@ -13,27 +65,15 @@ export async function handleAnthropicRequest(
 ): Promise<AnthropicResponse> {
   const startTime = Date.now();
   const requestId = crypto.randomUUID();
-  const { backend, onTelemetry } = options;
+  const { backend, onTelemetry, clientAuthHeader } = options;
+  
+  const authHeader = resolveAuthHeader(backend, clientAuthHeader);
+  const result = await callBackend(request, backend, authHeader);
 
-  const proxyRequest = { ...request, model: backend.model };
-
-  const response = await fetch(`${backend.url}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${backend.apiKey}`,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify(proxyRequest),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Backend error: ${response.status} ${error}`);
-  }
-
-  const result = await response.json() as AnthropicResponse;
   const hasToolCalls = result.content?.some(c => c.type === 'tool_use') || false;
+  const hasVision = request.messages.some(msg => 
+    Array.isArray(msg.content) && msg.content.some(block => block.type === 'image')
+  );
 
   if (onTelemetry) {
     onTelemetry({
@@ -45,7 +85,7 @@ export async function handleAnthropicRequest(
       outputTokens: result.usage?.output_tokens || 0,
       latencyMs: Date.now() - startTime,
       hasToolCalls,
-      hasVision: false,
+      hasVision,
     });
   }
 
@@ -58,7 +98,9 @@ export async function* handleAnthropicStreamingRequest(
 ): AsyncGenerator<string> {
   const startTime = Date.now();
   const requestId = crypto.randomUUID();
-  const { backend, onTelemetry } = options;
+  const { backend, onTelemetry, clientAuthHeader } = options;
+  
+  const authHeader = resolveAuthHeader(backend, clientAuthHeader);
 
   const estimatedInputTokens = estimateRequestTokens(request.messages);
   const enricher = new SSEEnricher({ estimatedInputTokens });
@@ -69,7 +111,7 @@ export async function* handleAnthropicStreamingRequest(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${backend.apiKey}`,
+      'Authorization': authHeader,
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify(proxyRequest),
@@ -112,7 +154,9 @@ export async function* handleAnthropicStreamingRequest(
       outputTokens: stats.outputTokens,
       latencyMs: Date.now() - startTime,
       hasToolCalls: stats.hasToolCalls,
-      hasVision: false,
+      hasVision: request.messages.some(msg => 
+        Array.isArray(msg.content) && msg.content.some(block => block.type === 'image')
+      ),
     });
   }
 }

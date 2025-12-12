@@ -1,37 +1,25 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import {
+  serializerCompiler,
+  validatorCompiler,
+  type ZodTypeProvider,
+} from 'fastify-type-provider-zod';
 import pino from 'pino';
 import { loadConfig } from './config.js';
-import { AnthropicRouter, countTokens } from './router.js';
-import type { AnthropicRequest, OpenAIRequest } from './types/index.js';
-
-interface TokenCountRequest {
-  messages?: { content: string | { type: string; text?: string; input?: unknown; content?: unknown }[] }[];
-  system?: string | { type: string; text?: string }[];
-  tools?: { name?: string; description?: string; input_schema?: unknown }[];
-}
+import { AnthropicRouter } from './router.js';
+import {
+  handleTokenCount,
+  createAnthropicMessagesHandler,
+  createOpenAIChatHandler,
+  createHealthHandler,
+  createStatsHandler,
+  createModelsHandler,
+} from './handlers/index.js';
+import { checkBackendHealth, discoverModel, getAvailableModels } from './init.js';
+import { AnthropicRequestSchema, OpenAIRequestSchema, TokenCountRequestSchema } from './types/index.js';
 
 const logger = pino({ level: 'info' });
-
-async function checkBackendHealth(url: string, name: string): Promise<void> {
-  const healthUrl = `${url}/health`;
-  const modelsUrl = `${url}/v1/models`;
-  
-  for (const endpoint of [healthUrl, modelsUrl]) {
-    try {
-      const response = await fetch(endpoint, { method: 'GET', signal: AbortSignal.timeout(5000) });
-      // Accept 200 OK or 401 Unauthorized (means server is reachable but requires auth)
-      if (response.ok || response.status === 401) {
-        logger.info({ backend: name, endpoint }, 'Backend reachable');
-        return;
-      }
-    } catch {
-      // Try next endpoint
-    }
-  }
-  
-  throw new Error(`Backend ${name} unreachable at ${url} - check VLLM_URL`);
-}
 
 async function main() {
   const config = loadConfig();
@@ -40,8 +28,38 @@ async function main() {
   logger.info('Checking backend connectivity');
   await checkBackendHealth(config.defaultBackend.url, config.defaultBackend.name);
   
+  // Auto-discover or validate default backend model
+  const availableModels = await getAvailableModels(config.defaultBackend.url, config.defaultBackend.apiKey);
+  if (availableModels.length > 0) {
+    if (!config.defaultBackend.model) {
+      config.defaultBackend.model = availableModels[0];
+      logger.info({ model: config.defaultBackend.model }, 'Using discovered model');
+    } else if (!availableModels.includes(config.defaultBackend.model)) {
+      const originalModel = config.defaultBackend.model;
+      config.defaultBackend.model = availableModels[0];
+      logger.warn({ requested: originalModel, actual: config.defaultBackend.model }, 'Model overwritten - requested model not available');
+    }
+  }
+  
   if (config.visionBackend) {
     await checkBackendHealth(config.visionBackend.url, config.visionBackend.name);
+    
+    // Auto-discover vision model if not specified
+    if (!config.visionBackend.model || config.visionBackend.model === 'auto') {
+      const discoveredModel = await discoverModel(config.visionBackend.url, config.visionBackend.apiKey);
+      if (discoveredModel) {
+        config.visionBackend.model = discoveredModel;
+        logger.info({ model: discoveredModel }, 'Using discovered vision model');
+      }
+    } else {
+      // Check if configured vision model exists
+      const visionModels = await getAvailableModels(config.visionBackend.url, config.visionBackend.apiKey);
+      if (visionModels.length > 0 && !visionModels.includes(config.visionBackend.model)) {
+        const originalModel = config.visionBackend.model;
+        config.visionBackend.model = visionModels[0];
+        logger.warn({ requested: originalModel, actual: config.visionBackend.model }, 'Vision model overwritten - requested model not available');
+      }
+    }
   }
   
   const router = new AnthropicRouter(config);
@@ -54,149 +72,23 @@ async function main() {
         options: { colorize: true }
       }
     }
-  });
+  }).withTypeProvider<ZodTypeProvider>();
+
+  // Configure Zod validation
+  app.setValidatorCompiler(validatorCompiler);
+  app.setSerializerCompiler(serializerCompiler);
 
   await app.register(cors, { origin: true });
 
-  // Health check
-  app.get('/health', async () => ({ status: 'ok' }));
+  const ctx = { router, config };
 
-  // Telemetry stats endpoint
-  app.get('/stats', async () => router.getTelemetryStats());
-
-  // Models endpoint
-  app.get('/v1/models', async () => ({
-    object: 'list',
-    data: [{
-      id: config.defaultBackend.model,
-      object: 'model',
-      created: Date.now(),
-      owned_by: 'vllm',
-    }],
-  }));
-
-  // Token counting endpoint
-  app.post('/v1/messages/count_tokens', async (request) => {
-    const body = request.body as TokenCountRequest;
-    const { messages = [], system, tools = [] } = body;
-    
-    let tokenCount = 0;
-    
-    for (const message of messages) {
-      if (typeof message.content === 'string') {
-        tokenCount += countTokens(message.content);
-      } else if (Array.isArray(message.content)) {
-        for (const part of message.content) {
-          if (part.type === 'text') tokenCount += countTokens(part.text || '');
-          else if (part.type === 'tool_use') tokenCount += countTokens(JSON.stringify(part.input || {}));
-          else if (part.type === 'tool_result') {
-            tokenCount += countTokens(typeof part.content === 'string' ? part.content : JSON.stringify(part.content || ''));
-          }
-        }
-      }
-    }
-    
-    if (typeof system === 'string') tokenCount += countTokens(system);
-    else if (Array.isArray(system)) {
-      for (const item of system) {
-        if (item.type === 'text' && item.text) tokenCount += countTokens(item.text);
-      }
-    }
-    
-    for (const tool of tools) {
-      if (tool.name) tokenCount += countTokens(tool.name);
-      if (tool.description) tokenCount += countTokens(tool.description);
-      if (tool.input_schema) tokenCount += countTokens(JSON.stringify(tool.input_schema));
-    }
-    
-    return { input_tokens: tokenCount };
-  });
-
-  // Anthropic /v1/messages endpoint
-  app.post('/v1/messages', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    const apiKey = authHeader?.replace('Bearer ', '') || request.headers['x-api-key'];
-    
-    if (apiKey !== config.apiKey) {
-      reply.code(401);
-      return { error: { type: 'authentication_error', message: 'Invalid API key' } };
-    }
-
-    const body = request.body as AnthropicRequest;
-
-    try {
-      if (body.stream) {
-        reply.raw.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-        });
-        
-        try {
-          for await (const chunk of router.handleAnthropicStreamingRequest(body)) {
-            reply.raw.write(chunk);
-          }
-        } catch (streamError: unknown) {
-          const errorEvent = `data: ${JSON.stringify({
-            type: 'error',
-            error: { type: 'api_error', message: streamError instanceof Error ? streamError.message : 'Unknown error' }
-          })}\n\n`;
-          reply.raw.write(errorEvent);
-        }
-        
-        reply.raw.end();
-        reply.hijack();
-        return;
-      } else {
-        return await router.handleAnthropicRequest(body);
-      }
-    } catch (error: unknown) {
-      request.log.error({ err: error }, 'Anthropic request failed');
-      if (!reply.sent) {
-        reply.code(500);
-        return { error: { type: 'api_error', message: error instanceof Error ? error.message : 'Unknown error' } };
-      }
-    }
-  });
-
-  // OpenAI /v1/chat/completions endpoint
-  app.post('/v1/chat/completions', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    const apiKey = authHeader?.replace('Bearer ', '');
-    
-    if (apiKey !== config.apiKey) {
-      reply.code(401);
-      return { error: { message: 'Invalid API key', type: 'invalid_request_error' } };
-    }
-
-    const body = request.body as OpenAIRequest;
-
-    try {
-      if (body.stream) {
-        reply.raw.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-        });
-        
-        for await (const chunk of router.handleOpenAIStreamingRequest(body)) {
-          reply.raw.write(chunk);
-        }
-        
-        reply.raw.end();
-        reply.hijack();
-        return;
-      } else {
-        return await router.handleOpenAIRequest(body);
-      }
-    } catch (error: unknown) {
-      request.log.error({ err: error }, 'OpenAI request failed');
-      if (!reply.sent) {
-        reply.code(500);
-        return { error: { message: error instanceof Error ? error.message : 'Unknown error', type: 'api_error' } };
-      }
-    }
-  });
+  // Routes
+  app.get('/health', createHealthHandler());
+  app.get('/stats', createStatsHandler(ctx));
+  app.get('/v1/models', createModelsHandler(ctx));
+  app.post('/v1/messages/count_tokens', { schema: { body: TokenCountRequestSchema } }, async (request) => handleTokenCount(request.body));
+  app.post('/v1/messages', { schema: { body: AnthropicRequestSchema } }, createAnthropicMessagesHandler(ctx));
+  app.post('/v1/chat/completions', { schema: { body: OpenAIRequestSchema } }, createOpenAIChatHandler(ctx));
 
   // Start server
   const host = config.host;

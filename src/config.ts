@@ -10,7 +10,7 @@ export function loadConfig(): RouterConfig {
       name: 'vllm',
       url: process.env.VLLM_URL || 'http://localhost:8000',
       apiKey: process.env.VLLM_API_KEY || '',
-      model: process.env.VLLM_MODEL || 'qwen3-coder-30b-fp8',
+      model: process.env.VLLM_MODEL || '',
     },
 
     
@@ -18,7 +18,8 @@ export function loadConfig(): RouterConfig {
       name: 'vision',
       url: process.env.VISION_URL,
       apiKey: process.env.VISION_API_KEY || '',
-      model: process.env.VISION_MODEL || 'gpt-4-vision',
+      model: process.env.VISION_MODEL || 'auto',
+      anthropicNative: process.env.VISION_ANTHROPIC_NATIVE === 'true',
     } : undefined,
     
     telemetry: {

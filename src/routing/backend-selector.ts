@@ -1,8 +1,8 @@
-import type { AnthropicRequest, BackendConfig, RouterConfig } from '../types/index.js';
+import type { AnthropicRequest, BackendConfig, OpenAIRequest, RouterConfig } from '../types/index.js';
 
 export class BackendSelector {
-  private defaultBackend: BackendConfig;
-  private visionBackend?: BackendConfig;
+  private readonly defaultBackend: BackendConfig;
+  private readonly visionBackend?: BackendConfig;
 
   constructor(config: RouterConfig) {
     this.defaultBackend = config.defaultBackend;
@@ -10,17 +10,35 @@ export class BackendSelector {
   }
 
   select(request: AnthropicRequest): BackendConfig {
-    if (this.hasVisionContent(request) && this.visionBackend) {
+    if (this.hasAnthropicVision(request) && this.visionBackend) {
       return this.visionBackend;
     }
     return this.defaultBackend;
   }
 
-  hasVisionContent(request: AnthropicRequest): boolean {
+  selectForOpenAI(request: OpenAIRequest): BackendConfig {
+    if (this.hasOpenAIVision(request) && this.visionBackend) {
+      return this.visionBackend;
+    }
+    return this.defaultBackend;
+  }
+
+  hasAnthropicVision(request: AnthropicRequest): boolean {
     for (const msg of request.messages) {
       if (Array.isArray(msg.content)) {
         for (const block of msg.content) {
           if (block.type === 'image') return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  hasOpenAIVision(request: OpenAIRequest): boolean {
+    for (const msg of request.messages) {
+      if (Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (part.type === 'image_url' && part.image_url?.url) return true;
         }
       }
     }
