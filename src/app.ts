@@ -31,6 +31,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
             transport: {target: 'pino-pretty', options: {colorize: true}},
           }
         : logger,
+    bodyLimit: 50 * 1024 * 1024, // 50MB for base64 images
   });
 
   app.decorate('config', config);
