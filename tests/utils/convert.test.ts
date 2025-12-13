@@ -95,7 +95,7 @@ describe('anthropicToOpenAI', () => {
     };
 
     const result = anthropicToOpenAI(req);
-    const content = result.messages[0].content as Array<{type: string}>;
+    const content = result.messages[0].content as {type: string}[];
 
     expect(content).toHaveLength(2);
     expect(content[0]).toEqual({type: 'text', text: 'What is this?'});
@@ -121,12 +121,13 @@ describe('anthropicToOpenAI', () => {
       max_tokens: 1024,
       messages: [{
         role: 'user',
-        content: [{type: 'unknown', data: 'test'} as any],
+        // @ts-expect-error testing unknown block type
+        content: [{type: 'unknown', data: 'test'}],
       }],
     };
 
     const result = anthropicToOpenAI(req);
-    const content = result.messages[0].content as Array<{type: string; text: string}>;
+    const content = result.messages[0].content as {type: string; text: string}[];
 
     expect(content[0].type).toBe('text');
     expect(content[0].text).toContain('unknown');
