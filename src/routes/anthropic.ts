@@ -10,6 +10,7 @@ import {
   formatSseError,
   getBackendAuth,
   hasAnthropicImages,
+  stripAnthropicImages,
   anthropicToOpenAI,
   openAIToAnthropic,
 } from '../utils/index.js';
@@ -42,9 +43,11 @@ async function anthropicRoutes(app: FastifyInstance): Promise<void> {
         return result;
       }
 
+      // Strip images from request for non-vision backend
+      const sanitizedBody = stripAnthropicImages(body);
       const result = await callBackend<AnthropicResponse>(
         `${backend.url}/v1/messages`,
-        {...body, model: backend.model || body.model},
+        {...sanitizedBody, model: backend.model || body.model},
         getBackendAuth(backend, authHeader),
       );
 
@@ -78,7 +81,7 @@ async function handleStream(
       : `${backend.url}/v1/messages`;
     const reqBody = useVision
       ? {...anthropicToOpenAI(body, {useVisionPrompt: true}), model: backend.model || body.model, stream: true}
-      : {...body, model: backend.model || body.model, stream: true};
+      : {...stripAnthropicImages(body), model: backend.model || body.model, stream: true};
 
     for await (const chunk of streamBackend(endpoint, reqBody, getBackendAuth(backend, authHeader))) {
       reply.raw.write(chunk);

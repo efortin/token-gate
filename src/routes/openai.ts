@@ -10,6 +10,7 @@ import {
   formatSseError,
   getBackendAuth,
   hasOpenAIImages,
+  stripOpenAIImages,
 } from '../utils/index.js';
 
 async function openaiRoutes(app: FastifyInstance): Promise<void> {
@@ -19,19 +20,19 @@ async function openaiRoutes(app: FastifyInstance): Promise<void> {
     const body = request.body as OpenAIRequest;
     const authHeader = request.headers.authorization;
 
-    const backend =
-      hasOpenAIImages(body) && app.config.visionBackend
-        ? app.config.visionBackend
-        : app.config.defaultBackend;
+    const useVision = hasOpenAIImages(body) && !!app.config.visionBackend;
+    const backend = useVision ? app.config.visionBackend! : app.config.defaultBackend;
 
     try {
       if (body.stream) {
-        return handleStream(app, reply, body, backend, authHeader, user, startTime);
+        return handleStream(app, reply, body, backend, useVision, authHeader, user, startTime);
       }
 
+      // Strip images from request for non-vision backend
+      const requestBody = useVision ? body : stripOpenAIImages(body);
       const result = await callBackend<OpenAIResponse>(
         `${backend.url}/v1/chat/completions`,
-        {...body, model: backend.model || body.model},
+        {...requestBody, model: backend.model || body.model},
         getBackendAuth(backend, authHeader),
       );
 
@@ -51,6 +52,7 @@ async function handleStream(
   reply: FastifyReply,
   body: OpenAIRequest,
   backend: {url: string; apiKey: string; model: string},
+  useVision: boolean,
   authHeader: string | undefined,
   user: string,
   startTime: number,
@@ -58,9 +60,11 @@ async function handleStream(
   reply.raw.writeHead(200, SSE_HEADERS);
 
   try {
+    // Strip images from request for non-vision backend
+    const requestBody = useVision ? body : stripOpenAIImages(body);
     for await (const chunk of streamBackend(
       `${backend.url}/v1/chat/completions`,
-      {...body, model: backend.model || body.model, stream: true},
+      {...requestBody, model: backend.model || body.model, stream: true},
       getBackendAuth(backend, authHeader),
     )) {
       reply.raw.write(chunk);
