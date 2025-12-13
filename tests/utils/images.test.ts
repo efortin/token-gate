@@ -5,6 +5,8 @@ import {
   hasOpenAIImages,
   getMimeType,
   isImageMimeType,
+  stripAnthropicImages,
+  stripOpenAIImages,
 } from '../../src/utils/images.js';
 
 describe('hasAnthropicImages', () => {
@@ -94,5 +96,132 @@ describe('isImageMimeType', () => {
   it('should return false for non-image types', () => {
     expect(isImageMimeType('application/json')).toBe(false);
     expect(isImageMimeType('text/plain')).toBe(false);
+  });
+});
+
+describe('stripAnthropicImages', () => {
+  it('should preserve string content', () => {
+    const body = {
+      model: 'test',
+      max_tokens: 100,
+      messages: [{role: 'user' as const, content: 'Hello'}],
+    };
+    const result = stripAnthropicImages(body);
+    expect(result.messages[0].content).toBe('Hello');
+  });
+
+  it('should remove image blocks and keep text', () => {
+    const body = {
+      model: 'test',
+      max_tokens: 100,
+      messages: [{
+        role: 'user' as const,
+        content: [
+          {type: 'text', text: 'What is this?'},
+          {type: 'image', source: {type: 'base64', data: 'abc'}},
+        ],
+      }],
+    };
+    const result = stripAnthropicImages(body);
+    expect(result.messages[0].content).toBe('What is this?');
+  });
+
+  it('should replace all-image content with placeholder', () => {
+    const body = {
+      model: 'test',
+      max_tokens: 100,
+      messages: [{
+        role: 'user' as const,
+        content: [{type: 'image', source: {type: 'base64', data: 'abc'}}],
+      }],
+    };
+    const result = stripAnthropicImages(body);
+    expect(result.messages[0].content).toBe('[Image removed]');
+  });
+
+  it('should keep multiple text blocks as array', () => {
+    const body = {
+      model: 'test',
+      max_tokens: 100,
+      messages: [{
+        role: 'user' as const,
+        content: [
+          {type: 'text', text: 'Part 1'},
+          {type: 'image', source: {type: 'base64', data: 'abc'}},
+          {type: 'text', text: 'Part 2'},
+        ],
+      }],
+    };
+    const result = stripAnthropicImages(body);
+    expect(result.messages[0].content).toEqual([
+      {type: 'text', text: 'Part 1'},
+      {type: 'text', text: 'Part 2'},
+    ]);
+  });
+});
+
+describe('stripOpenAIImages', () => {
+  it('should preserve string content', () => {
+    const body = {
+      model: 'test',
+      messages: [{role: 'user', content: 'Hello'}],
+    };
+    const result = stripOpenAIImages(body);
+    expect(result.messages[0].content).toBe('Hello');
+  });
+
+  it('should preserve null content', () => {
+    const body = {
+      model: 'test',
+      messages: [{role: 'assistant', content: null}],
+    };
+    const result = stripOpenAIImages(body);
+    expect(result.messages[0].content).toBeNull();
+  });
+
+  it('should remove image_url and keep text', () => {
+    const body = {
+      model: 'test',
+      messages: [{
+        role: 'user',
+        content: [
+          {type: 'text', text: 'What is this?'},
+          {type: 'image_url', image_url: {url: 'data:image/png;base64,abc'}},
+        ],
+      }],
+    };
+    const result = stripOpenAIImages(body);
+    expect(result.messages[0].content).toBe('What is this?');
+  });
+
+  it('should replace all-image content with placeholder', () => {
+    const body = {
+      model: 'test',
+      messages: [{
+        role: 'user',
+        content: [{type: 'image_url', image_url: {url: 'data:image/png;base64,abc'}}],
+      }],
+    };
+    const result = stripOpenAIImages(body);
+    expect(result.messages[0].content).toBe('[Image removed]');
+  });
+
+  it('should keep multiple text parts as array', () => {
+    const body = {
+      model: 'test',
+      messages: [{
+        role: 'user',
+        content: [
+          {type: 'text', text: 'Part 1'},
+          {type: 'image_url', image_url: {url: 'data:image/png;base64,abc'}},
+          {type: 'text', text: 'Part 2'},
+        ],
+      }],
+    };
+    const result = stripOpenAIImages(body);
+    expect(result.messages[0].content).toEqual([
+      {type: 'text', text: 'Part 1'},
+      {type: 'text', text: 'Part 2'},
+    ]);
   });
 });
