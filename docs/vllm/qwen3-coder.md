@@ -1,10 +1,10 @@
-# Qwen3 Coder 30B FP8 - Configuration vLLM
+# Qwen3 Coder 30B FP8 - vLLM Configuration
 
-> Testé sur **2x RTX 3090** (48GB VRAM total)
+> Tested on **2x RTX 3090** (48GB VRAM total)
 
-Configuration pour `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` avec vLLM.
+Configuration for `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` with vLLM.
 
-## Lancement vLLM
+## Launch vLLM
 
 ```bash
 vllm serve Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8 \
@@ -24,44 +24,44 @@ vllm serve Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8 \
   --port 8000
 ```
 
-## Options critiques
+## Critical Options
 
 ### Tool Calling
 
-| Option | Valeur | Description |
-|--------|--------|-------------|
-| `--tool-call-parser` | `qwen3_coder` | Parser spécifique Qwen3 Coder |
-| `--enable-auto-tool-choice` | - | Active la sélection automatique des tools |
+| Option | Value | Description |
+|--------|-------|-------------|
+| `--tool-call-parser` | `qwen3_coder` | Qwen3 Coder specific parser |
+| `--enable-auto-tool-choice` | - | Enable automatic tool selection |
 
-> ⚠️ Utiliser `qwen3_coder`, pas `hermes` ni `mistral`.
+> ⚠️ Use `qwen3_coder`, not `hermes` or `mistral`.
 
 ### Performance 2x RTX 3090
 
-| Option | Valeur | Description |
-|--------|--------|-------------|
-| `--tensor-parallel-size` | `2` | Split sur 2 GPUs |
-| `--kv-cache-dtype` | `fp8` | Cache KV en FP8 (économie VRAM) |
-| `--max-model-len` | `132000` | Context 132k tokens |
-| `--gpu-memory-utilization` | `0.94` | Laisser marge pour éviter OOM |
+| Option | Value | Description |
+|--------|-------|-------------|
+| `--tensor-parallel-size` | `2` | Split across 2 GPUs |
+| `--kv-cache-dtype` | `fp8` | KV cache in FP8 (saves VRAM) |
+| `--max-model-len` | `132000` | 132k token context |
+| `--gpu-memory-utilization` | `0.94` | Leave margin to avoid OOM |
 
-## Comparaison Devstral vs Qwen3 Coder
+## Devstral vs Qwen3 Coder Comparison
 
 | Aspect | Devstral 24B | Qwen3 Coder 30B FP8 |
 |--------|--------------|---------------------|
 | Tool parser | `mistral` | `qwen3_coder` |
-| Context max | 140k | 132k |
-| Format tool IDs | 9 chars alphanum | Standard |
-| Quantization | BF16 | FP8 natif |
+| Max context | 140k | 132k |
+| Tool ID format | 9 chars alphanum | Standard |
+| Quantization | BF16 | Native FP8 |
 | VRAM 2x3090 | ✅ | ✅ |
 
-## Variables d'environnement
+## Environment Variables
 
 ```bash
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 CUDA_VISIBLE_DEVICES=0,1
 ```
 
-## Vérification
+## Verification
 
 ```bash
 # Health check

@@ -1,10 +1,10 @@
-# Devstral Small 2 24B - Configuration vLLM
+# Devstral Small 2 24B - vLLM Configuration
 
-> Testé sur **2x RTX 3090** (48GB VRAM total)
+> Tested on **2x RTX 3090** (48GB VRAM total)
 
-Configuration optimisée pour `mistralai/Devstral-Small-2-24B-Instruct-2512` avec vLLM.
+Optimized configuration for `mistralai/Devstral-Small-2-24B-Instruct-2512` with vLLM.
 
-## Lancement vLLM
+## Launch vLLM
 
 ```bash
 vllm serve mistralai/Devstral-Small-2-24B-Instruct-2512 \
@@ -24,113 +24,113 @@ vllm serve mistralai/Devstral-Small-2-24B-Instruct-2512 \
   --port 8000
 ```
 
-## Options critiques
+## Critical Options
 
 ### Tool Calling
 
-| Option | Valeur | Description |
-|--------|--------|-------------|
-| `--tool-call-parser` | `mistral` | Parser spécifique Mistral pour les tool calls |
-| `--enable-auto-tool-choice` | - | Active la sélection automatique des tools |
+| Option | Value | Description |
+|--------|-------|-------------|
+| `--tool-call-parser` | `mistral` | Mistral-specific parser for tool calls |
+| `--enable-auto-tool-choice` | - | Enable automatic tool selection |
 
-> ⚠️ **Sans ces options**, vLLM ne parse pas correctement les tool calls Mistral.
+> ⚠️ **Without these options**, vLLM won't parse Mistral tool calls correctly.
 
 ### Performance
 
-| Option | Valeur | Description |
-|--------|--------|-------------|
-| `--tensor-parallel-size` | `2` | Nombre de GPUs (ajuster selon setup) |
-| `--kv-cache-dtype` | `fp8` | Cache KV en FP8 pour économiser VRAM |
-| `--max-model-len` | `140000` | Context window max (~140k tokens) |
-| `--enable-prefix-caching` | - | Cache les préfixes communs |
-| `--enable-chunked-prefill` | - | Prefill par chunks pour mieux gérer la mémoire |
-| `--gpu-memory-utilization` | `0.94` | Utilisation GPU (laisser marge pour OOM) |
+| Option | Value | Description |
+|--------|-------|-------------|
+| `--tensor-parallel-size` | `2` | Number of GPUs (adjust per setup) |
+| `--kv-cache-dtype` | `fp8` | KV cache in FP8 to save VRAM |
+| `--max-model-len` | `140000` | Max context window (~140k tokens) |
+| `--enable-prefix-caching` | - | Cache common prefixes |
+| `--enable-chunked-prefill` | - | Chunked prefill for better memory |
+| `--gpu-memory-utilization` | `0.94` | GPU utilization (leave margin for OOM) |
 
 ### Batching
 
-| Option | Valeur | Description |
-|--------|--------|-------------|
-| `--max-num-batched-tokens` | `16384` | Tokens max par batch |
-| `--max-num-seqs` | `4` | Séquences concurrentes max |
+| Option | Value | Description |
+|--------|-------|-------------|
+| `--max-num-batched-tokens` | `16384` | Max tokens per batch |
+| `--max-num-seqs` | `4` | Max concurrent sequences |
 
-## Edge Cases Mistral/vLLM
+## Mistral/vLLM Edge Cases
 
-Le proxy Token-Gate gère automatiquement ces problèmes de compatibilité :
+Token-Gate proxy automatically handles these compatibility issues:
 
-### 1. Champ `index` interdit dans `tool_calls`
+### 1. `index` field forbidden in `tool_calls`
 
-vLLM rejette les requêtes avec `index` dans les tool calls.
+vLLM rejects requests with `index` in tool calls.
 
 ```typescript
-// Avant (erreur vLLM)
+// Before (vLLM error)
 tool_calls: [{ index: 0, id: "abc", function: {...} }]
 
-// Après (OK)
+// After (OK)
 tool_calls: [{ id: "abc", function: {...} }]
 ```
 
-### 2. JSON malformé dans arguments
+### 2. Malformed JSON in arguments
 
-Mistral peut générer du JSON invalide. Le proxy sanitize :
+Mistral can generate invalid JSON. The proxy sanitizes:
 
 ```typescript
-// Avant
+// Before
 arguments: "{ invalid json"
 
-// Après
+// After
 arguments: "{}"
 ```
 
-### 3. Messages assistant vides
+### 3. Empty assistant messages
 
-vLLM tokenizer échoue sur messages assistant sans contenu ni tool_calls.
+vLLM tokenizer fails on assistant messages without content or tool_calls.
 
 ```typescript
-// Filtré automatiquement
+// Automatically filtered
 { role: "assistant", content: "" }
 ```
 
-### 4. IDs tool_call > 9 caractères
+### 4. tool_call IDs > 9 characters
 
-Mistral limite les IDs à 9 caractères alphanumériques.
+Mistral limits IDs to 9 alphanumeric characters.
 
 ```typescript
-// Avant
+// Before
 id: "toolu_01ABC123XYZ"
 
-// Après  
+// After  
 id: "ABC123XYZ"
 ```
 
-### 5. `tool_choice` sans `tools`
+### 5. `tool_choice` without `tools`
 
-vLLM rejette `tool_choice` si `tools` est vide ou absent.
+vLLM rejects `tool_choice` if `tools` is empty or missing.
 
 ```typescript
-// Avant (erreur)
+// Before (error)
 { tool_choice: "auto", tools: [] }
 
-// Après (OK)
+// After (OK)
 { tools: [] }
 ```
 
-## Variables d'environnement
+## Environment Variables
 
 ```bash
-# Performance PyTorch
+# PyTorch performance
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# HuggingFace (si modèle privé)
+# HuggingFace (if private model)
 HF_TOKEN=hf_xxx
 ```
 
-## Ressources requises
+## Required Resources
 
-- **GPU**: 2x RTX 3090/4090 ou équivalent (48GB VRAM total)
-- **RAM**: 64GB recommandé
-- **Stockage**: ~50GB pour le modèle
+- **GPU**: 2x RTX 3090/4090 or equivalent (48GB VRAM total)
+- **RAM**: 64GB recommended
+- **Storage**: ~50GB for model
 
-## Vérification
+## Verification
 
 ```bash
 # Health check

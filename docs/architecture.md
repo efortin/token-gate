@@ -1,12 +1,12 @@
 # Token-Gate Proxy
 
-Proxy vLLM avec transformations pipeline pour compatibilité Mistral/vLLM.
+vLLM proxy with pipeline transformations for Mistral/vLLM compatibility.
 
-## Principes
+## Principles
 
-- **KISS** - Code minimal, pipelines composables
-- **Proxy** - Transformation puis forward vers vLLM
-- **Composable** - `pipe()` et `when()` pour construire les pipelines
+- **KISS** - Minimal code, composable pipelines
+- **Proxy** - Transform then forward to vLLM
+- **Composable** - `pipe()` and `when()` to build pipelines
 
 ## Flow
 
@@ -19,16 +19,21 @@ flowchart LR
 
     subgraph "Proxy :3456"
         OAI["/v1/chat/completions"]
+        COMP["/v1/completions"]
         ANT["/v1/messages"]
     end
 
     subgraph vLLM
         VLLM["/v1/chat/completions"]
+        VLLMC["/v1/completions"]
     end
 
     VIBE -->|OpenAI| OAI
+    VIBE -->|Legacy| COMP
     OAI -->|transform| VLLM
+    COMP -->|passthrough| VLLMC
     VLLM -->|response| VIBE
+    VLLMC -->|response| VIBE
 
     CLAUDE -->|Anthropic| ANT
     ANT -->|toOpenAI| VLLM
@@ -37,9 +42,10 @@ flowchart LR
 
 ## Pipelines
 
-### OpenAI → vLLM
+### OpenAI → vLLM (117 lines)
 
 ```typescript
+// Request pipeline - vLLM/Mistral compatibility
 const transform = (useVision: boolean) => pipe<OpenAIRequest>(
   when(!useVision, stripOpenAIImages),
   filterEmptyAssistantMessages,
@@ -50,50 +56,77 @@ const transform = (useVision: boolean) => pipe<OpenAIRequest>(
 
 | Transformer | Description |
 |-------------|-------------|
-| `stripOpenAIImages` | Retire les images si pas de backend vision |
-| `filterEmptyAssistantMessages` | Retire messages assistant vides (vLLM rejette) |
-| `normalizeOpenAIToolIds` | Retire `index`, sanitize JSON, IDs 9 chars |
-| `sanitizeToolChoice` | Retire `tool_choice` si pas de `tools` |
+| `stripOpenAIImages` | Remove images if no vision backend |
+| `filterEmptyAssistantMessages` | Remove empty assistant messages (vLLM rejects) |
+| `normalizeOpenAIToolIds` | Strip `index`, sanitize JSON, IDs to 9 chars |
+| `sanitizeToolChoice` | Remove `tool_choice` if no `tools` |
 
-### Anthropic → vLLM → Anthropic
+**Routes:**
+- `POST /v1/chat/completions` - Full pipeline with transformations
+- `POST /v1/completions` - Legacy passthrough (no transformation)
+
+### Anthropic → vLLM → Anthropic (101 lines)
 
 ```typescript
+// Request pipeline: Anthropic → preprocess → OpenAI
 const preprocess = pipe<AnthropicRequest>(
   stripAnthropicImages,
   injectWebSearchPrompt,
 );
 const toOpenAI = (req, useVision) => anthropicToOpenAI(preprocess(req), {...});
+
+// Response pipeline: OpenAI → Anthropic
 const toAnthropic = (res, model) => openAIToAnthropic(res, model);
 ```
 
 | Transformer | Description |
 |-------------|-------------|
-| `stripAnthropicImages` | Retire les images si pas de backend vision |
-| `injectWebSearchPrompt` | Ajoute instructions web search au system |
-| `anthropicToOpenAI` | Convertit format Anthropic → OpenAI |
-| `openAIToAnthropic` | Convertit réponse OpenAI → Anthropic |
+| `stripAnthropicImages` | Remove images if no vision backend |
+| `injectWebSearchPrompt` | Add web search instructions to system |
+| `anthropicToOpenAI` | Convert Anthropic → OpenAI format |
+| `openAIToAnthropic` | Convert OpenAI → Anthropic response |
+| `convertOpenAIStreamToAnthropic` | Convert OpenAI SSE stream → Anthropic |
+
+**Route:**
+- `POST /v1/messages` - Bidirectional conversion with streaming
+
+## Pipeline Utils (11 lines)
+
+```typescript
+// Compose transformers in sequence
+export const pipe = <T>(...fns: Transformer<T>[]): Transformer<T> =>
+  (data: T) => fns.reduce((acc, fn) => fn(acc), data);
+
+// Conditional transformer
+export const when = <T>(cond: boolean, fn: Transformer<T>): Transformer<T> =>
+  cond ? fn : (x) => x;
+```
 
 ## Structure
 
 ```
 src/
 ├── routes/
-│   ├── openai.ts       # transform → vLLM (115 lignes)
-│   └── anthropic.ts    # preprocess → toOpenAI → vLLM → toAnthropic (100 lignes)
+│   ├── openai.ts       # transform → vLLM (117 lines)
+│   ├── anthropic.ts    # preprocess → toOpenAI → vLLM → toAnthropic (101 lines)
+│   └── system.ts       # /health, /v1/models
 ├── utils/
-│   ├── pipeline.ts     # pipe(), when() (10 lignes)
-│   ├── convert.ts      # Tous les transformers
-│   ├── images.ts       # Gestion images + sanitizeToolChoice
-│   └── tokens.ts       # Estimation tokens
-└── services/
-    └── backend.ts      # Appels HTTP vLLM
+│   ├── pipeline.ts     # pipe(), when() (11 lines)
+│   ├── convert.ts      # All transformers (431 lines)
+│   ├── images.ts       # Image handling + sanitizeToolChoice (77 lines)
+│   ├── tokens.ts       # Token estimation
+│   └── auth.ts         # Backend authentication
+├── services/
+│   └── backend.ts      # vLLM HTTP calls (119 lines)
+├── plugins/
+│   └── metrics.ts      # Prometheus metrics
+└── prompts/
+    ├── vision.ts       # Vision system prompt
+    └── web-search.ts   # Web search system prompt
 ```
 
-## Config vLLM
+## vLLM Config
 
-```bash
-vllm serve mistralai/Devstral-Small-2-24B-Instruct-2512 \
-  --served-model-name devstral-small-2-24b \
-  --tool-call-parser mistral \
-  --enable-auto-tool-choice
-```
+See `docs/vllm/` for detailed configurations:
+- `devstral-2-small.md` - Mistral Devstral 24B (2x3090)
+- `qwen3-coder.md` - Qwen3 Coder 30B FP8 (2x3090)
