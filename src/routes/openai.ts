@@ -15,8 +15,8 @@ import {
 } from '../utils/index.js';
 
 async function openaiRoutes(app: FastifyInstance): Promise<void> {
-  // Legacy completions endpoint - proxy directly to vLLM
-  app.post('/v1/completions', async (request, reply) => {
+  // Handler for completions (legacy endpoint)
+  const handleCompletions = async (request: import('fastify').FastifyRequest, reply: import('fastify').FastifyReply) => {
     const body = request.body as Record<string, unknown>;
     const authHeader = request.headers.authorization;
     const backend = app.config.defaultBackend;
@@ -47,9 +47,14 @@ async function openaiRoutes(app: FastifyInstance): Promise<void> {
       reply.code(StatusCodes.INTERNAL_SERVER_ERROR);
       return createApiError(error instanceof Error ? error.message : 'Unknown error');
     }
-  });
+  };
 
-  app.post('/v1/chat/completions', async (request, reply) => {
+  // Register completions routes (with and without /v1 prefix)
+  app.post('/v1/completions', handleCompletions);
+  app.post('/completions', handleCompletions);
+
+  // Handler for chat completions
+  const handleChatCompletions = async (request: import('fastify').FastifyRequest, reply: import('fastify').FastifyReply) => {
     const startTime = Date.now();
     const user = request.userEmail;
     const body = request.body as OpenAIRequest;
@@ -81,7 +86,10 @@ async function openaiRoutes(app: FastifyInstance): Promise<void> {
       reply.code(StatusCodes.INTERNAL_SERVER_ERROR);
       return createApiError(error instanceof Error ? error.message : 'Unknown error');
     }
-  });
+  };
+
+  // Register chat completions route
+  app.post('/v1/chat/completions', handleChatCompletions);
 }
 
 async function handleStream(
