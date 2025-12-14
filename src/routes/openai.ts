@@ -1,4 +1,4 @@
-import type {FastifyInstance, FastifyReply} from 'fastify';
+import type {FastifyInstance, FastifyReply, FastifyRequest} from 'fastify';
 import fp from 'fastify-plugin';
 
 import type {OpenAIRequest, OpenAIResponse} from '../types/index.js';
@@ -14,162 +14,101 @@ import {
   normalizeOpenAIToolIds,
   filterEmptyAssistantMessages,
   sanitizeToolChoice,
+  pipe,
+  when,
 } from '../utils/index.js';
 
+// ============================================================================
+// Request Pipeline - vLLM/Mistral compatibility transformations
+// ============================================================================
+
+const transform = (useVision: boolean) => pipe<OpenAIRequest>(
+  when(!useVision, stripOpenAIImages),
+  filterEmptyAssistantMessages,
+  normalizeOpenAIToolIds,
+  sanitizeToolChoice,
+);
+
+// ============================================================================
+// Routes
+// ============================================================================
+
 async function openaiRoutes(app: FastifyInstance): Promise<void> {
-  // Handler for completions (legacy endpoint)
-  const handleCompletions = async (request: import('fastify').FastifyRequest, reply: import('fastify').FastifyReply) => {
-    const body = request.body as Record<string, unknown>;
-    const authHeader = request.headers.authorization;
-    const backend = app.config.defaultBackend;
+  const getBackend = (useVision: boolean) => 
+    useVision && app.config.visionBackend ? app.config.visionBackend : app.config.defaultBackend;
+
+  // Legacy completions - passthrough
+  app.post('/v1/completions', handler(app, false));
+  app.post('/completions', handler(app, false));
+
+  // Chat completions - with transformations
+  app.post('/v1/chat/completions', async (req: FastifyRequest, reply: FastifyReply) => {
+    const body = req.body as OpenAIRequest;
+    const useVision = hasOpenAIImages(body) && !!app.config.visionBackend;
+    const backend = getBackend(useVision);
+    const auth = getBackendAuth(backend, req.headers.authorization);
+
+    // Pipeline: transform → set model → send
+    const transformed = transform(useVision)(body);
+    const payload = {...transformed, model: backend.model || body.model};
 
     try {
-      if (body.stream) {
-        reply.raw.writeHead(200, SSE_HEADERS);
-        for await (const chunk of streamBackend(
-          `${backend.url}/v1/completions`,
-          {...body, model: backend.model || body.model},
-          getBackendAuth(backend, authHeader),
-        )) {
-          reply.raw.write(chunk);
-        }
-        reply.raw.end();
-        reply.hijack();
-        return;
-      }
-
-      const result = await callBackend(
-        `${backend.url}/v1/completions`,
-        {...body, model: backend.model || body.model},
-        getBackendAuth(backend, authHeader),
-      );
-      return result;
-    } catch (error) {
-      request.log.error({err: error}, 'Completions request failed');
+      if (body.stream) return stream(reply, backend.url, payload, auth);
+      return await callBackend<OpenAIResponse>(`${backend.url}/v1/chat/completions`, payload, auth);
+    } catch (e) {
+      req.log.error({err: e}, 'Request failed');
       reply.code(StatusCodes.INTERNAL_SERVER_ERROR);
-      return createApiError(error instanceof Error ? error.message : 'Unknown error');
+      return createApiError(e instanceof Error ? e.message : 'Unknown error');
     }
-  };
-
-  // Register completions routes (with and without /v1 prefix)
-  app.post('/v1/completions', handleCompletions);
-  app.post('/completions', handleCompletions);
-
-  // Handler for chat completions
-  const handleChatCompletions = async (request: import('fastify').FastifyRequest, reply: import('fastify').FastifyReply) => {
-    const startTime = Date.now();
-    const user = request.userEmail;
-    const body = request.body as OpenAIRequest;
-    const authHeader = request.headers.authorization;
-
-    // Debug: log incoming request
-    request.log.info({model: body.model, stream: body.stream, messageCount: body.messages?.length, hasTools: !!body.tools}, 'Chat completions request');
-
-    const visionBackend = app.config.visionBackend;
-    const useVision = hasOpenAIImages(body) && !!visionBackend;
-    const backend = useVision && visionBackend ? visionBackend : app.config.defaultBackend;
-
-    try {
-      if (body.stream) {
-        return handleStream(app, reply, body, backend, useVision, authHeader, user, startTime);
-      }
-
-      // Strip images, normalize tool IDs, and sanitize tool_choice for Mistral/vLLM compatibility
-      const strippedBody = useVision ? body : stripOpenAIImages(body);
-      const filteredBody = filterEmptyAssistantMessages(strippedBody);
-      const normalizedBody = normalizeOpenAIToolIds(filteredBody);
-      const requestBody = sanitizeToolChoice(normalizedBody);
-      const result = await callBackend<OpenAIResponse>(
-        `${backend.url}/v1/chat/completions`,
-        {...requestBody, model: backend.model || body.model},
-        getBackendAuth(backend, authHeader),
-      );
-
-      recordMetrics(app, user, backend.model, startTime, 'ok', result.usage);
-      return result;
-    } catch (error) {
-      recordMetrics(app, user, backend.model, startTime, 'error');
-      request.log.error({err: error}, 'Request failed');
-      reply.code(StatusCodes.INTERNAL_SERVER_ERROR);
-      return createApiError(error instanceof Error ? error.message : 'Unknown error');
-    }
-  };
-
-  // Register chat completions route
-  app.post('/v1/chat/completions', handleChatCompletions);
+  });
 }
 
-async function handleStream(
-  app: FastifyInstance,
-  reply: FastifyReply,
-  body: OpenAIRequest,
-  backend: {url: string; apiKey: string; model: string},
-  useVision: boolean,
-  authHeader: string | undefined,
-  user: string,
-  startTime: number,
-): Promise<void> {
-  // Strip images, normalize tool IDs, and sanitize tool_choice for Mistral/vLLM compatibility
-  const strippedBody = useVision ? body : stripOpenAIImages(body);
-  const filteredBody = filterEmptyAssistantMessages(strippedBody);
-      const normalizedBody = normalizeOpenAIToolIds(filteredBody);
-  const requestBody = sanitizeToolChoice(normalizedBody);
-  
-  // Get the stream generator - this will throw on connection errors
-  let stream: AsyncGenerator<string>;
-  try {
-    stream = streamBackend(
-      `${backend.url}/v1/chat/completions`,
-      {...requestBody, model: backend.model || body.model, stream: true},
-      getBackendAuth(backend, authHeader),
-    );
-    // Try to get first chunk to verify connection works
-    const firstResult = await stream.next();
-    if (firstResult.done) {
-      throw new Error('Empty response from backend');
+// ============================================================================
+// Helpers
+// ============================================================================
+
+const handler = (app: FastifyInstance, useTransform: boolean) => 
+  async (req: FastifyRequest, reply: FastifyReply) => {
+    const body = req.body as OpenAIRequest;
+    const backend = app.config.defaultBackend;
+    const auth = getBackendAuth(backend, req.headers.authorization);
+    const payload = useTransform 
+      ? {...transform(false)(body), model: backend.model || body.model}
+      : {...body, model: backend.model || (body as {model?: string}).model};
+
+    try {
+      if ((body as {stream?: boolean}).stream) return stream(reply, backend.url, payload, auth);
+      return await callBackend(`${backend.url}/v1/completions`, payload, auth);
+    } catch (e) {
+      req.log.error({err: e}, 'Request failed');
+      reply.code(StatusCodes.INTERNAL_SERVER_ERROR);
+      return createApiError(e instanceof Error ? e.message : 'Unknown error');
     }
-    // Connection works, now send 200 and stream
+  };
+
+const stream = async (reply: FastifyReply, baseUrl: string, body: Record<string, unknown>, auth: string) => {
+  const url = `${baseUrl}/v1/chat/completions`;
+  let gen: AsyncGenerator<string>;
+
+  try {
+    gen = streamBackend(url, {...body, stream: true}, auth);
+    const first = await gen.next();
+    if (first.done) throw new Error('Empty response');
     reply.raw.writeHead(200, SSE_HEADERS);
-    reply.raw.write(firstResult.value);
-  } catch (error) {
-    // Connection failed - return proper error status
-    recordMetrics(app, user, backend.model, startTime, 'error');
+    reply.raw.write(first.value);
+  } catch (e) {
     reply.code(StatusCodes.INTERNAL_SERVER_ERROR);
-    reply.send(createApiError(error instanceof Error ? error.message : 'Backend connection failed'));
-    return;
+    return reply.send(createApiError(e instanceof Error ? e.message : 'Backend failed'));
   }
 
   try {
-    for await (const chunk of stream) {
-      reply.raw.write(chunk);
-    }
-    recordMetrics(app, user, backend.model, startTime, 'ok');
-  } catch (error) {
-    reply.raw.write(formatSseError(error));
-    recordMetrics(app, user, backend.model, startTime, 'error');
+    for await (const chunk of gen) reply.raw.write(chunk);
+  } catch (e) {
+    reply.raw.write(formatSseError(e));
   }
 
   reply.raw.end();
   reply.hijack();
-}
-
-function recordMetrics(
-  app: FastifyInstance,
-  user: string,
-  model: string,
-  startTime: number,
-  status: string,
-  usage?: {prompt_tokens: number; completion_tokens: number},
-): void {
-  app.metrics.requestsTotal.inc({user, model, endpoint: 'openai', status});
-  app.metrics.requestDuration.observe(
-    {user, model, endpoint: 'openai'},
-    (Date.now() - startTime) / 1000,
-  );
-  if (usage) {
-    app.metrics.tokensTotal.inc({user, model, type: 'input'}, usage.prompt_tokens);
-    app.metrics.tokensTotal.inc({user, model, type: 'output'}, usage.completion_tokens);
-  }
-}
+};
 
 export default fp(openaiRoutes, {name: 'openai-routes'});

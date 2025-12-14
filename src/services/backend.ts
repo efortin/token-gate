@@ -54,17 +54,19 @@ export async function* streamBackend(
   if (!response.ok) {
     const error = await response.text();
     // Log detailed error info for debugging
-    const reqBody = body as {messages?: unknown[]; model?: string};
+    const reqBody = body as {messages?: unknown[]; model?: string; tools?: unknown[]};
     const msgCount = reqBody.messages?.length ?? 0;
-    const lastMsgRole = reqBody.messages?.[msgCount - 1] as {role?: string} | undefined;
+    const lastMsg = reqBody.messages?.[msgCount - 1] as {role?: string; tool_calls?: unknown[]} | undefined;
     console.error(`[streamBackend] Backend error ${response.status}:`, {
       url,
       model: reqBody.model,
       messageCount: msgCount,
-      lastMessageRole: lastMsgRole?.role,
-      error: error.slice(0, 500),
+      lastMessageRole: lastMsg?.role,
+      hasToolCalls: !!lastMsg?.tool_calls,
+      toolCount: reqBody.tools?.length,
+      errorPreview: error.slice(0, 1000),
     });
-    throw new Error(`Backend error: ${response.status} ${error}`);
+    throw new Error(`Backend error: ${response.status} ${error.slice(0, 500)}`);
   }
 
   if (!response.body) {

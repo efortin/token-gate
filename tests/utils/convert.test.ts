@@ -1,5 +1,5 @@
 import {describe, it, expect} from 'vitest';
-import {anthropicToOpenAI, openAIToAnthropic, injectWebSearchPrompt, parseMistralToolCalls, isMistralModel, sanitizeToolName, normalizeOpenAIToolIds, filterEmptyAssistantMessages} from '../../src/utils/convert.js';
+import {anthropicToOpenAI, openAIToAnthropic, injectWebSearchPrompt, sanitizeToolName, normalizeOpenAIToolIds, filterEmptyAssistantMessages} from '../../src/utils/convert.js';
 import type {AnthropicRequest, OpenAIResponse} from '../../src/types/index.js';
 
 describe('anthropicToOpenAI', () => {
@@ -243,10 +243,11 @@ describe('anthropicToOpenAI', () => {
     };
 
     const result = anthropicToOpenAI(req);
+    const tools = result.tools as {type: string; function: {name: string}}[];
 
-    expect(result.tools).toHaveLength(1);
-    expect(result.tools![0].type).toBe('function');
-    expect(result.tools![0].function.name).toBe('calculator');
+    expect(tools).toHaveLength(1);
+    expect(tools[0].type).toBe('function');
+    expect(tools[0].function.name).toBe('calculator');
   });
 });
 
@@ -386,122 +387,6 @@ describe('injectWebSearchPrompt', () => {
   });
 });
 
-describe('isMistralModel', () => {
-  it('should detect mistral models', () => {
-    expect(isMistralModel('mistral-7b')).toBe(true);
-    expect(isMistralModel('Mistral-Large')).toBe(true);
-    expect(isMistralModel('mistralai/Mistral-7B')).toBe(true);
-  });
-
-  it('should detect devstral models', () => {
-    expect(isMistralModel('devstral-small-2-24b')).toBe(true);
-    expect(isMistralModel('Devstral-Small-2-24B-Instruct')).toBe(true);
-  });
-
-  it('should detect codestral models', () => {
-    expect(isMistralModel('codestral-latest')).toBe(true);
-    expect(isMistralModel('Codestral-22B')).toBe(true);
-  });
-
-  it('should not detect non-mistral models', () => {
-    expect(isMistralModel('claude-3')).toBe(false);
-    expect(isMistralModel('gpt-4')).toBe(false);
-    expect(isMistralModel('llama-3')).toBe(false);
-  });
-});
-
-describe('parseMistralToolCalls', () => {
-  it('should return null for text without [TOOL_CALLS]', () => {
-    expect(parseMistralToolCalls('Hello world')).toBeNull();
-    expect(parseMistralToolCalls('Some text without tool calls')).toBeNull();
-  });
-
-  it('should parse single tool call', () => {
-    const text = '[TOOL_CALLS]Write{"file_path": "/test.txt", "content": "hello"}';
-    const result = parseMistralToolCalls(text);
-    
-    expect(result).not.toBeNull();
-    expect(result).toHaveLength(1);
-    expect(result![0].name).toBe('Write');
-    expect(result![0].arguments).toEqual({file_path: '/test.txt', content: 'hello'});
-  });
-
-  it('should parse tool call with complex JSON', () => {
-    const text = '[TOOL_CALLS]Read{"file_path": "/Users/test/file.md", "offset": 0, "limit": 100}';
-    const result = parseMistralToolCalls(text);
-    
-    expect(result).not.toBeNull();
-    expect(result).toHaveLength(1);
-    expect(result![0].name).toBe('Read');
-    expect(result![0].arguments).toEqual({file_path: '/Users/test/file.md', offset: 0, limit: 100});
-  });
-
-  it('should parse multiple tool calls', () => {
-    const text = '[TOOL_CALLS]Read{"path": "/a.txt"}[TOOL_CALLS]Write{"path": "/b.txt", "content": "test"}';
-    const result = parseMistralToolCalls(text);
-    
-    expect(result).not.toBeNull();
-    expect(result).toHaveLength(2);
-    expect(result![0].name).toBe('Read');
-    expect(result![1].name).toBe('Write');
-  });
-
-  it('should handle text before [TOOL_CALLS]', () => {
-    const text = 'I will now write the file. [TOOL_CALLS]Write{"file_path": "/test.txt", "content": "data"}';
-    const result = parseMistralToolCalls(text);
-    
-    expect(result).not.toBeNull();
-    expect(result).toHaveLength(1);
-    expect(result![0].name).toBe('Write');
-  });
-
-  it('should skip malformed JSON', () => {
-    const text = '[TOOL_CALLS]Bad{not valid json}';
-    const result = parseMistralToolCalls(text);
-    
-    expect(result).toBeNull();
-  });
-
-  it('should parse valid calls and skip invalid ones', () => {
-    const text = '[TOOL_CALLS]Good{"key": "value"}[TOOL_CALLS]Bad{invalid}';
-    const result = parseMistralToolCalls(text);
-    
-    expect(result).not.toBeNull();
-    expect(result).toHaveLength(1);
-    expect(result![0].name).toBe('Good');
-  });
-
-  it('should handle nested JSON with braces in content', () => {
-    const text = '[TOOL_CALLS]Write{"file_path": "/test.ts", "content": "function test() {\\n  return { a: 1 };\\n}"}';
-    const result = parseMistralToolCalls(text);
-    
-    expect(result).not.toBeNull();
-    expect(result).toHaveLength(1);
-    expect(result![0].name).toBe('Write');
-    expect(result![0].arguments.file_path).toBe('/test.ts');
-    expect(result![0].arguments.content).toContain('function test()');
-  });
-
-  it('should handle deeply nested JSON objects', () => {
-    const text = '[TOOL_CALLS]Edit{"file": "test.json", "changes": {"nested": {"deep": {"value": 123}}}}';
-    const result = parseMistralToolCalls(text);
-    
-    expect(result).not.toBeNull();
-    expect(result).toHaveLength(1);
-    expect(result![0].name).toBe('Edit');
-    expect((result![0].arguments.changes as {nested: {deep: {value: number}}}).nested.deep.value).toBe(123);
-  });
-
-  it('should handle JSON with escaped quotes', () => {
-    const text = '[TOOL_CALLS]Write{"content": "He said \\"hello\\" to me"}';
-    const result = parseMistralToolCalls(text);
-    
-    expect(result).not.toBeNull();
-    expect(result).toHaveLength(1);
-    expect(result![0].arguments.content).toBe('He said "hello" to me');
-  });
-});
-
 describe('sanitizeToolName', () => {
   it('should trim leading/trailing spaces', () => {
     expect(sanitizeToolName(' Glob')).toBe('Glob');
@@ -564,7 +449,7 @@ describe('anthropicToOpenAI edge cases', () => {
 
     const result = anthropicToOpenAI(req);
     const toolCalls = (result.messages[1] as {tool_calls?: {function: {name: string}}[]}).tool_calls;
-    expect(toolCalls![0].function.name).toBe('Glob');
+    expect(toolCalls?.[0].function.name).toBe('Glob');
   });
 
   it('should add stream_options when streaming', () => {

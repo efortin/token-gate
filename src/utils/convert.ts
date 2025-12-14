@@ -3,133 +3,16 @@ import {VISION_SYSTEM_PROMPT} from '../prompts/vision.js';
 import {WEB_SEARCH_SYSTEM_PROMPT} from '../prompts/web-search.js';
 
 /**
- * Parsed Mistral tool call from [TOOL_CALLS] format.
- */
-interface ParsedMistralToolCall {
-  name: string;
-  arguments: Record<string, unknown>;
-}
-
-/**
- * Extracts a balanced JSON object starting at the given position.
- * Handles nested braces correctly.
- */
-function extractBalancedJson(text: string, startIndex: number): string | null {
-  if (text[startIndex] !== '{') return null;
-  
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  
-  for (let i = startIndex; i < text.length; i++) {
-    const char = text[i];
-    
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    
-    if (char === '\\' && inString) {
-      escape = true;
-      continue;
-    }
-    
-    if (char === '"' && !escape) {
-      inString = !inString;
-      continue;
-    }
-    
-    if (!inString) {
-      if (char === '{') depth++;
-      else if (char === '}') {
-        depth--;
-        if (depth === 0) {
-          return text.slice(startIndex, i + 1);
-        }
-      }
-    }
-  }
-  
-  return null; // Unbalanced
-}
-
-/**
- * Parses Mistral's native [TOOL_CALLS] format from text content.
- * Format: [TOOL_CALLS]ToolName{"param": "value", ...}
- * Can have multiple tool calls: [TOOL_CALLS]Tool1{...}[TOOL_CALLS]Tool2{...}
- * @returns Array of parsed tool calls, or null if no [TOOL_CALLS] found
- */
-export function parseMistralToolCalls(text: string): ParsedMistralToolCall[] | null {
-  if (!text.includes('[TOOL_CALLS]')) {
-    return null;
-  }
-
-  const toolCalls: ParsedMistralToolCall[] = [];
-  const marker = '[TOOL_CALLS]';
-  let searchStart = 0;
-  
-  while (true) {
-    const markerIndex = text.indexOf(marker, searchStart);
-    if (markerIndex === -1) break;
-    
-    const afterMarker = markerIndex + marker.length;
-    
-    // Extract tool name (alphanumeric + underscore)
-    const nameMatch = text.slice(afterMarker).match(/^(\w+)/);
-    if (!nameMatch) {
-      searchStart = afterMarker;
-      continue;
-    }
-    
-    const toolName = nameMatch[1];
-    const jsonStart = afterMarker + toolName.length;
-    
-    // Extract balanced JSON object
-    const jsonStr = extractBalancedJson(text, jsonStart);
-    if (!jsonStr) {
-      searchStart = jsonStart;
-      continue;
-    }
-    
-    try {
-      const args = JSON.parse(jsonStr);
-      toolCalls.push({name: toolName, arguments: args});
-    } catch {
-      // Skip malformed JSON
-    }
-    
-    searchStart = jsonStart + jsonStr.length;
-  }
-
-  return toolCalls.length > 0 ? toolCalls : null;
-}
-
-/**
- * Checks if model name indicates a Mistral model.
- */
-export function isMistralModel(model: string): boolean {
-  const lowerModel = model.toLowerCase();
-  return lowerModel.includes('mistral') || 
-         lowerModel.includes('devstral') || 
-         lowerModel.includes('codestral');
-}
-
-/**
  * Sanitizes a tool/function name to be valid for OpenAI/Mistral API.
  * Must be a-z, A-Z, 0-9, underscores and dashes, max 64 chars.
  */
 export function sanitizeToolName(name: string): string {
-  // Trim whitespace
   let sanitized = name.trim();
-  // Replace invalid characters with underscore
   sanitized = sanitized.replace(/[^a-zA-Z0-9_-]/g, '_');
-  // Remove leading/trailing underscores from replacements
   sanitized = sanitized.replace(/^_+|_+$/g, '');
-  // Truncate to 64 chars
   if (sanitized.length > 64) {
     sanitized = sanitized.slice(0, 64);
   }
-  // If empty after sanitization, use a default
   return sanitized || 'unknown_tool';
 }
 
@@ -161,20 +44,27 @@ interface OpenAIStreamChunk {
 }
 
 export interface ConvertOptions {
-  /** Add vision system prompt for image analysis. */
   useVisionPrompt?: boolean;
+}
+
+/** Normalizes a tool ID to Mistral-compatible format (9 alphanumeric chars). */
+export function normalizeToolId(id: string): string {
+  if (/^[a-zA-Z0-9]{9}$/.test(id)) {
+    return id;
+  }
+  const hash = id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  return Array.from({length: 9}, (_, i) => chars[(hash * (i + 1) * 7) % chars.length]).join('');
 }
 
 /** Converts an Anthropic request to OpenAI format. */
 export function anthropicToOpenAI(req: AnthropicRequest, options: ConvertOptions = {}): OpenAIRequest {
   const messages: OpenAIRequest['messages'] = [];
 
-  // Add vision system prompt if requested
   if (options.useVisionPrompt) {
     messages.push({role: 'system', content: VISION_SYSTEM_PROMPT});
   }
 
-  // Add user system message if present
   if (req.system) {
     const systemText = typeof req.system === 'string' 
       ? req.system 
@@ -182,15 +72,12 @@ export function anthropicToOpenAI(req: AnthropicRequest, options: ConvertOptions
     messages.push({role: 'system', content: systemText});
   }
 
-  // Convert messages
   for (const msg of req.messages) {
     if (typeof msg.content === 'string') {
       messages.push({role: msg.role, content: msg.content});
     } else {
-      // Check for tool_use blocks (assistant with tool calls)
       const toolUseBlocks = msg.content.filter((b) => b.type === 'tool_use');
       if (msg.role === 'assistant' && toolUseBlocks.length > 0) {
-        // Convert to OpenAI assistant message with tool_calls
         const textContent = msg.content
           .filter((b) => b.type === 'text')
           .map((b) => b.text || '')
@@ -199,7 +86,6 @@ export function anthropicToOpenAI(req: AnthropicRequest, options: ConvertOptions
           id: normalizeToolId(block.id || ''),
           type: 'function' as const,
           function: {
-            // Sanitize tool name: trim spaces, replace invalid chars with underscore
             name: sanitizeToolName(block.name || ''),
             arguments: JSON.stringify(block.input || {}),
           },
@@ -212,11 +98,8 @@ export function anthropicToOpenAI(req: AnthropicRequest, options: ConvertOptions
         continue;
       }
 
-      // Check for tool_result blocks (user with tool results)
       const toolResultBlocks = msg.content.filter((b) => b.type === 'tool_result');
       if (msg.role === 'user' && toolResultBlocks.length > 0) {
-        // Convert each tool_result to a separate tool message
-        // Note: Mistral does NOT allow 'user' after 'tool', so we skip text content here
         for (const block of toolResultBlocks) {
           const resultContent = typeof block.content === 'string' 
             ? block.content 
@@ -230,7 +113,6 @@ export function anthropicToOpenAI(req: AnthropicRequest, options: ConvertOptions
         continue;
       }
 
-      // Convert other content blocks (text, images)
       const parts = msg.content.map((block) => {
         if (block.type === 'text') {
           return {type: 'text', text: block.text || ''};
@@ -248,7 +130,6 @@ export function anthropicToOpenAI(req: AnthropicRequest, options: ConvertOptions
     }
   }
 
-  // Convert Anthropic tools to OpenAI format
   const tools = req.tools as {name: string; description: string; input_schema: unknown}[] | undefined;
   const openaiTools = tools?.map((tool) => ({
     type: 'function' as const,
@@ -260,8 +141,6 @@ export function anthropicToOpenAI(req: AnthropicRequest, options: ConvertOptions
   }));
 
   // Mistral requires: last message must be 'user' or 'tool', not 'assistant'
-  // If last message is assistant (without tool_calls), add user message
-  // But NOT after 'tool' messages - that's already valid
   const lastMsg = messages[messages.length - 1];
   const hasToolCalls = lastMsg && (lastMsg as {tool_calls?: unknown[]}).tool_calls;
   if (lastMsg && lastMsg.role === 'assistant' && !hasToolCalls) {
@@ -273,29 +152,20 @@ export function anthropicToOpenAI(req: AnthropicRequest, options: ConvertOptions
     messages,
     max_tokens: req.max_tokens,
     stream: req.stream,
-    // Request usage stats in streaming responses
     ...(req.stream && {stream_options: {include_usage: true}}),
     ...(openaiTools && {tools: openaiTools}),
   };
 }
 
-/** Normalizes a tool ID to Mistral-compatible format (9 alphanumeric chars). */
-export function normalizeToolId(id: string): string {
-  // If already valid format, return as-is
-  if (/^[a-zA-Z0-9]{9}$/.test(id)) {
-    return id;
-  }
-  // Generate deterministic ID from original
-  const hash = id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  return Array.from({length: 9}, (_, i) => chars[(hash * (i + 1) * 7) % chars.length]).join('');
-}
-
-/** Normalizes tool call IDs in OpenAI requests for Mistral compatibility. */
+/**
+ * Normalizes tool call IDs in OpenAI requests for Mistral/vLLM compatibility.
+ * - Strips `index` field (mistral-common rejects it)
+ * - Sanitizes malformed JSON in arguments
+ * - Normalizes IDs to 9 alphanumeric chars
+ */
 export function normalizeOpenAIToolIds(req: OpenAIRequest): OpenAIRequest {
   const idMap = new Map<string, string>();
 
-  // First pass: collect tool_calls IDs from assistant messages
   for (const msg of req.messages) {
     const toolCalls = (msg as {tool_calls?: {id: string}[]}).tool_calls;
     if (msg.role === 'assistant' && toolCalls) {
@@ -307,15 +177,12 @@ export function normalizeOpenAIToolIds(req: OpenAIRequest): OpenAIRequest {
     }
   }
 
-  // Second pass: rewrite all IDs
   const normalizedMessages = req.messages.map((msg) => {
-    // Rewrite tool_calls in assistant messages
-    const toolCalls = (msg as {tool_calls?: {id: string; type: string; function: unknown}[]}).tool_calls;
+    const toolCalls = (msg as {tool_calls?: {id: string; type: string; function: {name: string; arguments: string}; index?: number}[]}).tool_calls;
     if (msg.role === 'assistant' && toolCalls) {
       const newToolCalls = toolCalls.map((call) => {
-        // Strip index field which mistral-common rejects
-        const { index: _index, ...rest } = call as { index?: number; id: string; type: string; function: { name: string; arguments: string } };
-        // Sanitize function arguments - ensure valid JSON
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const {index, ...rest} = call;
         let sanitizedArgs = rest.function?.arguments || '{}';
         try {
           JSON.parse(sanitizedArgs);
@@ -325,13 +192,12 @@ export function normalizeOpenAIToolIds(req: OpenAIRequest): OpenAIRequest {
         return {
           ...rest,
           id: idMap.get(rest.id) || rest.id,
-          function: { ...rest.function, arguments: sanitizedArgs },
+          function: {...rest.function, arguments: sanitizedArgs},
         };
       });
       return {...msg, tool_calls: newToolCalls};
     }
 
-    // Rewrite tool_call_id in tool messages
     const toolCallId = (msg as {tool_call_id?: string}).tool_call_id;
     if (msg.role === 'tool' && toolCallId) {
       return {...msg, tool_call_id: idMap.get(toolCallId) || toolCallId};
@@ -340,15 +206,22 @@ export function normalizeOpenAIToolIds(req: OpenAIRequest): OpenAIRequest {
     return msg;
   });
 
-  // Mistral requires: last message must be 'user' or 'tool', not 'assistant'
-  // Only add user message after assistant WITHOUT tool_calls
-  const lastMsg = normalizedMessages[normalizedMessages.length - 1];
-  const hasToolCalls = lastMsg && (lastMsg as {tool_calls?: unknown[]}).tool_calls;
-  if (lastMsg && lastMsg.role === 'assistant' && !hasToolCalls) {
-    normalizedMessages.push({role: 'user', content: 'Continue.'});
-  }
-
   return {...req, messages: normalizedMessages};
+}
+
+/** Filters out invalid assistant messages (empty content and no tool_calls). */
+export function filterEmptyAssistantMessages(req: OpenAIRequest): OpenAIRequest {
+  const filteredMessages = req.messages.filter((msg) => {
+    if (msg.role === 'assistant') {
+      const content = (msg as {content?: string | null}).content;
+      const toolCalls = (msg as {tool_calls?: unknown[]}).tool_calls;
+      if ((!content || content === '') && (!toolCalls || toolCalls.length === 0)) {
+        return false;
+      }
+    }
+    return true;
+  });
+  return {...req, messages: filteredMessages};
 }
 
 /** Injects web search system prompt into an Anthropic request. */
@@ -365,10 +238,7 @@ export function injectWebSearchPrompt(req: AnthropicRequest): AnthropicRequest {
     ? `${existingSystem}\n\n${WEB_SEARCH_SYSTEM_PROMPT}`
     : WEB_SEARCH_SYSTEM_PROMPT;
 
-  return {
-    ...req,
-    system: newSystem,
-  };
+  return {...req, system: newSystem};
 }
 
 /** Converts an OpenAI response to Anthropic format. */
@@ -376,12 +246,10 @@ export function openAIToAnthropic(res: OpenAIResponse, model: string): Anthropic
   const choice = res.choices[0];
   const content: AnthropicResponse['content'] = [];
 
-  // Add text content if present
   if (choice?.message?.content) {
     content.push({type: 'text', text: choice.message.content});
   }
 
-  // Convert tool_calls to tool_use blocks
   const toolCalls = (choice?.message as {tool_calls?: {id: string; function: {name: string; arguments: string}}[]})?.tool_calls;
   if (toolCalls && toolCalls.length > 0) {
     for (const call of toolCalls) {
@@ -400,12 +268,10 @@ export function openAIToAnthropic(res: OpenAIResponse, model: string): Anthropic
     }
   }
 
-  // Ensure at least empty text if no content
   if (content.length === 0) {
     content.push({type: 'text', text: ''});
   }
 
-  // Map finish_reason to Anthropic stop_reason
   let stopReason: string | null = null;
   if (choice?.finish_reason === 'stop') {
     stopReason = 'end_turn';
@@ -430,82 +296,8 @@ export function openAIToAnthropic(res: OpenAIResponse, model: string): Anthropic
 }
 
 /**
- * Generates a Mistral-compatible tool call ID.
- * Mistral requires: a-z, A-Z, 0-9, length of 9.
- */
-function generateMistralToolId(index: number): string {
-  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  // Use index as seed for deterministic IDs, pad with random-looking chars
-  const base = index.toString(36).padStart(4, '0');
-  const suffix = Array.from({length: 5}, (_, i) => chars[(index * 7 + i * 13) % chars.length]).join('');
-  return (base + suffix).slice(0, 9);
-}
-
-/**
- * Normalizes tool call IDs in Anthropic requests for Mistral compatibility.
- * Mistral requires tool call IDs to be exactly 9 alphanumeric characters.
- * This function rewrites all tool_use and tool_result IDs to use Mistral-compatible format.
- */
-export function normalizeToolCallIds(req: AnthropicRequest): AnthropicRequest {
-  // Build a map of original ID -> new Mistral-compatible ID
-  const idMap = new Map<string, string>();
-  let toolIndex = 0;
-
-  // First pass: collect all tool_use IDs and create mappings
-  for (const msg of req.messages) {
-    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
-      for (const block of msg.content) {
-        if (block.type === 'tool_use' && block.id && !idMap.has(block.id)) {
-          // Generate Mistral-compatible ID (9 alphanumeric chars)
-          const newId = generateMistralToolId(toolIndex);
-          idMap.set(block.id, newId);
-          toolIndex++;
-        }
-      }
-    }
-  }
-
-  // No tool uses found, nothing to normalize
-  if (idMap.size === 0) {
-    return req;
-  }
-
-  // Second pass: rewrite all IDs
-  const normalizedMessages = req.messages.map((msg) => {
-    if (typeof msg.content === 'string') {
-      return msg;
-    }
-
-    const normalizedContent = msg.content.map((block) => {
-      // Rewrite tool_use IDs
-      if (block.type === 'tool_use' && block.id) {
-        const newId = idMap.get(block.id);
-        if (newId) {
-          return {...block, id: newId};
-        }
-      }
-      // Rewrite tool_result IDs
-      if (block.type === 'tool_result' && block.tool_use_id) {
-        const newId = idMap.get(block.tool_use_id);
-        if (newId) {
-          return {...block, tool_use_id: newId};
-        }
-      }
-      return block;
-    });
-
-    return {...msg, content: normalizedContent};
-  });
-
-  return {...req, messages: normalizedMessages};
-}
-
-/**
- * Converts OpenAI SSE stream chunks to Anthropic SSE format.
- * This is a generator that yields Anthropic-formatted SSE events.
- * @param stream - The OpenAI SSE stream
- * @param model - The model name
- * @param estimatedInputTokens - Pre-calculated input token estimate (from tiktoken)
+ * Converts OpenAI SSE stream to Anthropic SSE format.
+ * Simple pass-through conversion without Mistral [TOOL_CALLS] buffering.
  */
 export async function* convertOpenAIStreamToAnthropic(
   stream: AsyncGenerator<string>,
@@ -518,17 +310,9 @@ export async function* convertOpenAIStreamToAnthropic(
   let contentIndex = 0;
   let isFirstContent = true;
   const toolCalls = new Map<number, {id: string; name: string; arguments: string}>();
-  
-  // Buffer for Mistral [TOOL_CALLS] detection
-  let textBuffer = '';
-  let mistralToolCallsDetected = false;
-  const checkMistral = isMistralModel(model);
-  
-  // Track finish state to send message_delta with usage at the end
   let finalStopReason: string | null = null;
   let messageStopped = false;
 
-  // Send message_start event with estimated input tokens
   yield `event: message_start\ndata: ${JSON.stringify({
     type: 'message_start',
     message: {
@@ -544,7 +328,6 @@ export async function* convertOpenAIStreamToAnthropic(
   })}\n\n`;
 
   for await (const rawChunk of stream) {
-    // Parse SSE data lines
     const lines = rawChunk.split('\n');
     for (const line of lines) {
       if (!line.startsWith('data: ')) continue;
@@ -558,10 +341,8 @@ export async function* convertOpenAIStreamToAnthropic(
         continue;
       }
 
-      // Track usage if provided (may come in final chunk with empty choices)
       if (chunk.usage) {
         inputTokens = chunk.usage.prompt_tokens || inputTokens;
-        // Use real completion_tokens from vLLM instead of our chunk count
         if (chunk.usage.completion_tokens) {
           outputTokens = chunk.usage.completion_tokens;
         }
@@ -569,15 +350,11 @@ export async function* convertOpenAIStreamToAnthropic(
 
       const choice = chunk.choices?.[0];
       if (!choice) {
-        // Final usage-only chunk - send the final message_delta with stop_reason and usage
         if (chunk.usage && finalStopReason && !messageStopped) {
-          // Include both input_tokens and output_tokens from vLLM
-          const finalInputTokens = chunk.usage.prompt_tokens || inputTokens;
-          const finalOutputTokens = chunk.usage.completion_tokens || outputTokens;
           yield `event: message_delta\ndata: ${JSON.stringify({
             type: 'message_delta',
             delta: {stop_reason: finalStopReason, stop_sequence: null},
-            usage: {input_tokens: finalInputTokens, output_tokens: finalOutputTokens},
+            usage: {input_tokens: chunk.usage.prompt_tokens || inputTokens, output_tokens: chunk.usage.completion_tokens || outputTokens},
           })}\n\n`;
           yield `event: message_stop\ndata: ${JSON.stringify({type: 'message_stop'})}\n\n`;
           messageStopped = true;
@@ -587,93 +364,43 @@ export async function* convertOpenAIStreamToAnthropic(
 
       const delta = choice.delta;
 
-      // Handle text content
       if (delta.content) {
-        // For Mistral models, buffer content to detect [TOOL_CALLS]
-        if (checkMistral) {
-          textBuffer += delta.content;
-          
-          // Check if we're starting to see [TOOL_CALLS]
-          if (textBuffer.includes('[TOOL_CALLS]')) {
-            mistralToolCallsDetected = true;
-            // Don't emit text - we'll process tool calls at the end
-            outputTokens++;
-            continue;
-          }
-          
-          // If we haven't seen [TOOL_CALLS] yet and buffer is getting long,
-          // emit the safe portion (keeping last 20 chars for partial detection)
-          if (!mistralToolCallsDetected && textBuffer.length > 20) {
-            const safeText = textBuffer.slice(0, -20);
-            textBuffer = textBuffer.slice(-20);
-            
-            if (safeText) {
-              if (isFirstContent) {
-                yield `event: content_block_start\ndata: ${JSON.stringify({
-                  type: 'content_block_start',
-                  index: contentIndex,
-                  content_block: {type: 'text', text: ''},
-                })}\n\n`;
-                isFirstContent = false;
-              }
-              yield `event: content_block_delta\ndata: ${JSON.stringify({
-                type: 'content_block_delta',
-                index: contentIndex,
-                delta: {type: 'text_delta', text: safeText},
-              })}\n\n`;
-            }
-          }
-        } else {
-          // Non-Mistral: emit directly
-          if (isFirstContent) {
-            yield `event: content_block_start\ndata: ${JSON.stringify({
-              type: 'content_block_start',
-              index: contentIndex,
-              content_block: {type: 'text', text: ''},
-            })}\n\n`;
-            isFirstContent = false;
-          }
-          yield `event: content_block_delta\ndata: ${JSON.stringify({
-            type: 'content_block_delta',
+        if (isFirstContent) {
+          yield `event: content_block_start\ndata: ${JSON.stringify({
+            type: 'content_block_start',
             index: contentIndex,
-            delta: {type: 'text_delta', text: delta.content},
+            content_block: {type: 'text', text: ''},
           })}\n\n`;
+          isFirstContent = false;
         }
+        yield `event: content_block_delta\ndata: ${JSON.stringify({
+          type: 'content_block_delta',
+          index: contentIndex,
+          delta: {type: 'text_delta', text: delta.content},
+        })}\n\n`;
         outputTokens++;
       }
 
-      // Handle tool calls
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
           const existing = toolCalls.get(tc.index);
           if (!existing) {
-            // New tool call
             toolCalls.set(tc.index, {
               id: tc.id || '',
               name: tc.function?.name || '',
               arguments: tc.function?.arguments || '',
             });
-            // Close previous text block if needed
             if (!isFirstContent) {
-              yield `event: content_block_stop\ndata: ${JSON.stringify({
-                type: 'content_block_stop',
-                index: contentIndex,
-              })}\n\n`;
+              yield `event: content_block_stop\ndata: ${JSON.stringify({type: 'content_block_stop', index: contentIndex})}\n\n`;
               contentIndex++;
             }
             isFirstContent = false;
             yield `event: content_block_start\ndata: ${JSON.stringify({
               type: 'content_block_start',
               index: contentIndex + tc.index,
-              content_block: {
-                type: 'tool_use',
-                id: tc.id || `tool_${tc.index}`,
-                name: tc.function?.name || '',
-                input: {},
-              },
+              content_block: {type: 'tool_use', id: tc.id || `tool_${tc.index}`, name: tc.function?.name || '', input: {}},
             })}\n\n`;
           } else {
-            // Append to existing tool call
             if (tc.function?.arguments) {
               existing.arguments += tc.function.arguments;
               yield `event: content_block_delta\ndata: ${JSON.stringify({
@@ -686,105 +413,19 @@ export async function* convertOpenAIStreamToAnthropic(
         }
       }
 
-      // Handle finish
       if (choice.finish_reason) {
-        let stopReason = 'end_turn';
-        
-        // For Mistral: check if we have buffered [TOOL_CALLS] to process
-        if (checkMistral && mistralToolCallsDetected && textBuffer) {
-          const parsedTools = parseMistralToolCalls(textBuffer);
-          if (parsedTools && parsedTools.length > 0) {
-            // Close any open text block first
-            if (!isFirstContent) {
-              yield `event: content_block_stop\ndata: ${JSON.stringify({
-                type: 'content_block_stop',
-                index: contentIndex,
-              })}\n\n`;
-              contentIndex++;
-            }
-            
-            // Emit tool_use blocks for each parsed tool call
-            for (let i = 0; i < parsedTools.length; i++) {
-              const tool = parsedTools[i];
-              const toolId = generateMistralToolId(i);
-              
-              // content_block_start for tool_use
-              yield `event: content_block_start\ndata: ${JSON.stringify({
-                type: 'content_block_start',
-                index: contentIndex + i,
-                content_block: {
-                  type: 'tool_use',
-                  id: toolId,
-                  name: tool.name,
-                  input: tool.arguments,
-                },
-              })}\n\n`;
-              
-              // content_block_stop for tool_use
-              yield `event: content_block_stop\ndata: ${JSON.stringify({
-                type: 'content_block_stop',
-                index: contentIndex + i,
-              })}\n\n`;
-            }
-            
-            stopReason = 'tool_use';
-            isFirstContent = true; // Already closed
-          }
-        } else if (checkMistral && textBuffer && !mistralToolCallsDetected) {
-          // Emit any remaining buffered text
-          if (textBuffer) {
-            if (isFirstContent) {
-              yield `event: content_block_start\ndata: ${JSON.stringify({
-                type: 'content_block_start',
-                index: contentIndex,
-                content_block: {type: 'text', text: ''},
-              })}\n\n`;
-              isFirstContent = false;
-            }
-            yield `event: content_block_delta\ndata: ${JSON.stringify({
-              type: 'content_block_delta',
-              index: contentIndex,
-              delta: {type: 'text_delta', text: textBuffer},
-            })}\n\n`;
-          }
-        }
-        
-        // Close any open content blocks
         if (!isFirstContent) {
-          yield `event: content_block_stop\ndata: ${JSON.stringify({
-            type: 'content_block_stop',
-            index: contentIndex,
-          })}\n\n`;
+          yield `event: content_block_stop\ndata: ${JSON.stringify({type: 'content_block_stop', index: contentIndex})}\n\n`;
         }
 
-        // Map finish reason (if not already set by tool parsing)
-        if (stopReason === 'end_turn') {
-          if (choice.finish_reason === 'tool_calls') {
-            stopReason = 'tool_use';
-          } else if (choice.finish_reason === 'length') {
-            stopReason = 'max_tokens';
-          }
+        let stopReason = 'end_turn';
+        if (choice.finish_reason === 'tool_calls') {
+          stopReason = 'tool_use';
+        } else if (choice.finish_reason === 'length') {
+          stopReason = 'max_tokens';
         }
-
-        // Store stop reason - we'll send message_delta when we get the usage chunk
         finalStopReason = stopReason;
       }
     }
   }
-}
-
-/** Filters out invalid assistant messages (empty content and no tool_calls). */
-export function filterEmptyAssistantMessages(req: OpenAIRequest): OpenAIRequest {
-  const filteredMessages = req.messages.filter((msg) => {
-    if (msg.role === 'assistant') {
-      const content = (msg as {content?: string | null}).content;
-      const toolCalls = (msg as {tool_calls?: unknown[]}).tool_calls;
-      // Keep if has content OR has tool_calls
-      if ((!content || content === '') && (!toolCalls || toolCalls.length === 0)) {
-        return false; // Remove empty assistant message
-      }
-    }
-    return true;
-  });
-  return { ...req, messages: filteredMessages };
 }

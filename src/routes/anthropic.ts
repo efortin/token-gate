@@ -1,7 +1,7 @@
-import type {FastifyInstance, FastifyReply} from 'fastify';
+import type {FastifyInstance, FastifyReply, FastifyRequest} from 'fastify';
 import fp from 'fastify-plugin';
 
-import type {AnthropicRequest, OpenAIResponse} from '../types/index.js';
+import type {AnthropicRequest, OpenAIRequest, OpenAIResponse} from '../types/index.js';
 import {callBackend, streamBackend} from '../services/backend.js';
 import {
   SSE_HEADERS,
@@ -16,115 +16,84 @@ import {
   injectWebSearchPrompt,
   convertOpenAIStreamToAnthropic,
   estimateRequestTokens,
+  pipe,
 } from '../utils/index.js';
 
-async function anthropicRoutes(app: FastifyInstance): Promise<void> {
-  app.post('/v1/messages', async (request, reply) => {
-    const startTime = Date.now();
-    const user = request.userEmail;
-    const body = request.body as AnthropicRequest;
-    const authHeader = request.headers.authorization;
+// ============================================================================
+// Request Pipeline: Anthropic → preprocess → OpenAI → vLLM
+// ============================================================================
 
-    const visionBackend = app.config.visionBackend;
-    const useVision = hasAnthropicImages(body) && !!visionBackend;
-    const backend = useVision && visionBackend ? visionBackend : app.config.defaultBackend;
+const preprocess = pipe<AnthropicRequest>(
+  stripAnthropicImages,
+  injectWebSearchPrompt,
+);
+
+const toOpenAI = (req: AnthropicRequest, useVision: boolean): OpenAIRequest =>
+  anthropicToOpenAI(preprocess(req), {useVisionPrompt: useVision});
+
+// ============================================================================
+// Response Pipeline: vLLM → OpenAI → Anthropic
+// ============================================================================
+
+const toAnthropic = (res: OpenAIResponse, model: string) => openAIToAnthropic(res, model);
+
+// ============================================================================
+// Route
+// ============================================================================
+
+async function anthropicRoutes(app: FastifyInstance): Promise<void> {
+  const getBackend = (useVision: boolean) =>
+    useVision && app.config.visionBackend ? app.config.visionBackend : app.config.defaultBackend;
+
+  app.post('/v1/messages', async (req: FastifyRequest, reply: FastifyReply) => {
+    const body = req.body as AnthropicRequest;
+    const useVision = hasAnthropicImages(body) && !!app.config.visionBackend;
+    const backend = getBackend(useVision);
+    const auth = getBackendAuth(backend, req.headers.authorization);
+    const model = backend.model || body.model;
+
+    // Pipeline: Anthropic → OpenAI → vLLM
+    const payload = {...toOpenAI(body, useVision), model};
 
     try {
-      if (body.stream) {
-        return handleStream(app, reply, body, backend, useVision, authHeader, user, startTime);
-      }
-
-      // Always convert to OpenAI format for Mistral compatibility
-      const openaiReq = anthropicToOpenAI(
-        injectWebSearchPrompt(stripAnthropicImages(body)),
-        {useVisionPrompt: useVision},
-      );
-      request.log.debug({openaiMessages: JSON.stringify(openaiReq.messages)}, 'Converted to OpenAI format');
-      const openaiRes = await callBackend<OpenAIResponse>(
-        `${backend.url}/v1/chat/completions`,
-        {...openaiReq, model: backend.model || body.model},
-        getBackendAuth(backend, authHeader),
-      );
-      const result = openAIToAnthropic(openaiRes, backend.model || body.model);
-      recordMetrics(app, user, backend.model, startTime, 'ok', result.usage);
-      return result;
-    } catch (error) {
-      recordMetrics(app, user, backend.model, startTime, 'error');
-      request.log.error({err: error}, 'Request failed');
+      if (body.stream) return streamAnthropic(reply, backend.url, payload, auth, model);
+      const res = await callBackend<OpenAIResponse>(`${backend.url}/v1/chat/completions`, payload, auth);
+      return toAnthropic(res, model);
+    } catch (e) {
+      req.log.error({err: e}, 'Request failed');
       reply.code(StatusCodes.INTERNAL_SERVER_ERROR);
-      return createApiError(error instanceof Error ? error.message : 'Unknown error');
+      return createApiError(e instanceof Error ? e.message : 'Unknown error');
     }
   });
 }
 
-async function handleStream(
-  app: FastifyInstance,
+// ============================================================================
+// Streaming: OpenAI SSE → Anthropic SSE
+// ============================================================================
+
+const streamAnthropic = async (
   reply: FastifyReply,
-  body: AnthropicRequest,
-  backend: {url: string; apiKey: string; model: string},
-  useVision: boolean,
-  authHeader: string | undefined,
-  user: string,
-  startTime: number,
-): Promise<void> {
+  baseUrl: string,
+  body: OpenAIRequest,
+  auth: string,
+  model: string,
+) => {
   reply.raw.writeHead(200, SSE_HEADERS);
 
   try {
-    // Always use OpenAI format for Mistral compatibility
-    const processedBody = injectWebSearchPrompt(stripAnthropicImages(body));
-    const openaiReq = anthropicToOpenAI(processedBody, {useVisionPrompt: useVision});
-    const reqBody = {...openaiReq, model: backend.model || body.model, stream: true};
+    const inputTokens = estimateRequestTokens(body.messages);
+    const stream = streamBackend(`${baseUrl}/v1/chat/completions`, {...body, stream: true}, auth);
 
-    // Estimate input tokens from full OpenAI request (includes system prompt)
-    const estimatedInputTokens = estimateRequestTokens(openaiReq.messages);
-
-    // Convert OpenAI stream to Anthropic format
-    const openaiStream = streamBackend(`${backend.url}/v1/chat/completions`, reqBody, getBackendAuth(backend, authHeader));
-    for await (const chunk of convertOpenAIStreamToAnthropic(openaiStream, backend.model || body.model, estimatedInputTokens)) {
+    // Pipeline: OpenAI stream → Anthropic stream
+    for await (const chunk of convertOpenAIStreamToAnthropic(stream, model, inputTokens)) {
       reply.raw.write(chunk);
     }
-    recordMetrics(app, user, backend.model, startTime, 'ok');
-  } catch (error) {
-    // Log detailed error info for debugging
-    const msgCount = body.messages?.length ?? 0;
-    const lastMsg = body.messages?.[msgCount - 1];
-    const lastMsgRole = lastMsg?.role;
-    const lastMsgContentType = Array.isArray(lastMsg?.content) 
-      ? lastMsg.content.map((c: {type?: string}) => c.type).join(',')
-      : 'string';
-    app.log.error({
-      err: error, 
-      user, 
-      model: backend.model,
-      messageCount: msgCount,
-      lastMessageRole: lastMsgRole,
-      lastMessageContentTypes: lastMsgContentType,
-    }, 'Streaming request failed');
-    reply.raw.write(formatSseError(error));
-    recordMetrics(app, user, backend.model, startTime, 'error');
+  } catch (e) {
+    reply.raw.write(formatSseError(e));
   }
 
   reply.raw.end();
   reply.hijack();
-}
-
-function recordMetrics(
-  app: FastifyInstance,
-  user: string,
-  model: string,
-  startTime: number,
-  status: string,
-  usage?: {input_tokens: number; output_tokens: number},
-): void {
-  app.metrics.requestsTotal.inc({user, model, endpoint: 'anthropic', status});
-  app.metrics.requestDuration.observe(
-    {user, model, endpoint: 'anthropic'},
-    (Date.now() - startTime) / 1000,
-  );
-  if (usage) {
-    app.metrics.tokensTotal.inc({user, model, type: 'input'}, usage.input_tokens);
-    app.metrics.tokensTotal.inc({user, model, type: 'output'}, usage.output_tokens);
-  }
-}
+};
 
 export default fp(anthropicRoutes, {name: 'anthropic-routes'});
