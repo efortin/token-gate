@@ -15,6 +15,40 @@ import {
 } from '../utils/index.js';
 
 async function openaiRoutes(app: FastifyInstance): Promise<void> {
+  // Legacy completions endpoint - proxy directly to vLLM
+  app.post('/v1/completions', async (request, reply) => {
+    const body = request.body as Record<string, unknown>;
+    const authHeader = request.headers.authorization;
+    const backend = app.config.defaultBackend;
+
+    try {
+      if (body.stream) {
+        reply.raw.writeHead(200, SSE_HEADERS);
+        for await (const chunk of streamBackend(
+          `${backend.url}/v1/completions`,
+          {...body, model: backend.model || body.model},
+          getBackendAuth(backend, authHeader),
+        )) {
+          reply.raw.write(chunk);
+        }
+        reply.raw.end();
+        reply.hijack();
+        return;
+      }
+
+      const result = await callBackend(
+        `${backend.url}/v1/completions`,
+        {...body, model: backend.model || body.model},
+        getBackendAuth(backend, authHeader),
+      );
+      return result;
+    } catch (error) {
+      request.log.error({err: error}, 'Completions request failed');
+      reply.code(StatusCodes.INTERNAL_SERVER_ERROR);
+      return createApiError(error instanceof Error ? error.message : 'Unknown error');
+    }
+  });
+
   app.post('/v1/chat/completions', async (request, reply) => {
     const startTime = Date.now();
     const user = request.userEmail;
