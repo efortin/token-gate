@@ -15,6 +15,7 @@ import {
   openAIToAnthropic,
   injectWebSearchPrompt,
   convertOpenAIStreamToAnthropic,
+  estimateRequestTokens,
 } from '../utils/index.js';
 
 async function anthropicRoutes(app: FastifyInstance): Promise<void> {
@@ -70,15 +71,16 @@ async function handleStream(
 
   try {
     // Always use OpenAI format for Mistral compatibility
-    const openaiReq = anthropicToOpenAI(
-      injectWebSearchPrompt(stripAnthropicImages(body)),
-      {useVisionPrompt: useVision},
-    );
+    const processedBody = injectWebSearchPrompt(stripAnthropicImages(body));
+    const openaiReq = anthropicToOpenAI(processedBody, {useVisionPrompt: useVision});
     const reqBody = {...openaiReq, model: backend.model || body.model, stream: true};
+
+    // Estimate input tokens upfront for message_start event
+    const estimatedInputTokens = estimateRequestTokens(processedBody.messages);
 
     // Convert OpenAI stream to Anthropic format
     const openaiStream = streamBackend(`${backend.url}/v1/chat/completions`, reqBody, getBackendAuth(backend, authHeader));
-    for await (const chunk of convertOpenAIStreamToAnthropic(openaiStream, backend.model || body.model)) {
+    for await (const chunk of convertOpenAIStreamToAnthropic(openaiStream, backend.model || body.model, estimatedInputTokens)) {
       reply.raw.write(chunk);
     }
     recordMetrics(app, user, backend.model, startTime, 'ok');

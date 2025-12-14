@@ -366,19 +366,23 @@ export function normalizeToolCallIds(req: AnthropicRequest): AnthropicRequest {
 /**
  * Converts OpenAI SSE stream chunks to Anthropic SSE format.
  * This is a generator that yields Anthropic-formatted SSE events.
+ * @param stream - The OpenAI SSE stream
+ * @param model - The model name
+ * @param estimatedInputTokens - Pre-calculated input token estimate (from tiktoken)
  */
 export async function* convertOpenAIStreamToAnthropic(
   stream: AsyncGenerator<string>,
   model: string,
+  estimatedInputTokens: number = 0,
 ): AsyncGenerator<string> {
   const messageId = `msg_${Date.now()}`;
-  let inputTokens = 0;
+  let inputTokens = estimatedInputTokens;
   let outputTokens = 0;
   let contentIndex = 0;
   let isFirstContent = true;
   const toolCalls: Map<number, {id: string; name: string; arguments: string}> = new Map();
 
-  // Send message_start event
+  // Send message_start event with estimated input tokens
   yield `event: message_start\ndata: ${JSON.stringify({
     type: 'message_start',
     message: {
@@ -389,7 +393,7 @@ export async function* convertOpenAIStreamToAnthropic(
       model,
       stop_reason: null,
       stop_sequence: null,
-      usage: {input_tokens: 0, output_tokens: 0},
+      usage: {input_tokens: estimatedInputTokens, output_tokens: 0},
     },
   })}\n\n`;
 
