@@ -11,6 +11,49 @@ interface ParsedMistralToolCall {
 }
 
 /**
+ * Extracts a balanced JSON object starting at the given position.
+ * Handles nested braces correctly.
+ */
+function extractBalancedJson(text: string, startIndex: number): string | null {
+  if (text[startIndex] !== '{') return null;
+  
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  
+  for (let i = startIndex; i < text.length; i++) {
+    const char = text[i];
+    
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    
+    if (char === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+    
+    if (char === '"' && !escape) {
+      inString = !inString;
+      continue;
+    }
+    
+    if (!inString) {
+      if (char === '{') depth++;
+      else if (char === '}') {
+        depth--;
+        if (depth === 0) {
+          return text.slice(startIndex, i + 1);
+        }
+      }
+    }
+  }
+  
+  return null; // Unbalanced
+}
+
+/**
  * Parses Mistral's native [TOOL_CALLS] format from text content.
  * Format: [TOOL_CALLS]ToolName{"param": "value", ...}
  * Can have multiple tool calls: [TOOL_CALLS]Tool1{...}[TOOL_CALLS]Tool2{...}
@@ -22,35 +65,40 @@ export function parseMistralToolCalls(text: string): ParsedMistralToolCall[] | n
   }
 
   const toolCalls: ParsedMistralToolCall[] = [];
-  // Match [TOOL_CALLS]ToolName followed by JSON object
-  // The regex captures: tool name and the JSON object
-  const regex = /\[TOOL_CALLS\](\w+)(\{[\s\S]*?\})(?=\[TOOL_CALLS\]|$)/g;
+  const marker = '[TOOL_CALLS]';
+  let searchStart = 0;
   
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    const [, toolName, jsonStr] = match;
+  while (true) {
+    const markerIndex = text.indexOf(marker, searchStart);
+    if (markerIndex === -1) break;
+    
+    const afterMarker = markerIndex + marker.length;
+    
+    // Extract tool name (alphanumeric + underscore)
+    const nameMatch = text.slice(afterMarker).match(/^(\w+)/);
+    if (!nameMatch) {
+      searchStart = afterMarker;
+      continue;
+    }
+    
+    const toolName = nameMatch[1];
+    const jsonStart = afterMarker + toolName.length;
+    
+    // Extract balanced JSON object
+    const jsonStr = extractBalancedJson(text, jsonStart);
+    if (!jsonStr) {
+      searchStart = jsonStart;
+      continue;
+    }
+    
     try {
       const args = JSON.parse(jsonStr);
       toolCalls.push({name: toolName, arguments: args});
     } catch {
-      // Try to extract partial JSON - might be truncated
-      // Skip malformed tool calls
-      continue;
+      // Skip malformed JSON
     }
-  }
-
-  // Also try simpler format: [TOOL_CALLS]ToolName{...} without lookahead
-  if (toolCalls.length === 0) {
-    const simpleRegex = /\[TOOL_CALLS\](\w+)(\{[^}]+\})/g;
-    while ((match = simpleRegex.exec(text)) !== null) {
-      const [, toolName, jsonStr] = match;
-      try {
-        const args = JSON.parse(jsonStr);
-        toolCalls.push({name: toolName, arguments: args});
-      } catch {
-        continue;
-      }
-    }
+    
+    searchStart = jsonStart + jsonStr.length;
   }
 
   return toolCalls.length > 0 ? toolCalls : null;

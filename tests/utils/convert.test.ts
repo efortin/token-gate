@@ -470,6 +470,36 @@ describe('parseMistralToolCalls', () => {
     expect(result).toHaveLength(1);
     expect(result![0].name).toBe('Good');
   });
+
+  it('should handle nested JSON with braces in content', () => {
+    const text = '[TOOL_CALLS]Write{"file_path": "/test.ts", "content": "function test() {\\n  return { a: 1 };\\n}"}';
+    const result = parseMistralToolCalls(text);
+    
+    expect(result).not.toBeNull();
+    expect(result).toHaveLength(1);
+    expect(result![0].name).toBe('Write');
+    expect(result![0].arguments.file_path).toBe('/test.ts');
+    expect(result![0].arguments.content).toContain('function test()');
+  });
+
+  it('should handle deeply nested JSON objects', () => {
+    const text = '[TOOL_CALLS]Edit{"file": "test.json", "changes": {"nested": {"deep": {"value": 123}}}}';
+    const result = parseMistralToolCalls(text);
+    
+    expect(result).not.toBeNull();
+    expect(result).toHaveLength(1);
+    expect(result![0].name).toBe('Edit');
+    expect((result![0].arguments.changes as {nested: {deep: {value: number}}}).nested.deep.value).toBe(123);
+  });
+
+  it('should handle JSON with escaped quotes', () => {
+    const text = '[TOOL_CALLS]Write{"content": "He said \\"hello\\" to me"}';
+    const result = parseMistralToolCalls(text);
+    
+    expect(result).not.toBeNull();
+    expect(result).toHaveLength(1);
+    expect(result![0].arguments.content).toBe('He said "hello" to me');
+  });
 });
 
 describe('sanitizeToolName', () => {
@@ -503,5 +533,136 @@ describe('sanitizeToolName', () => {
 
   it('should handle the specific " Glob" case from the error', () => {
     expect(sanitizeToolName(' Glob')).toBe('Glob');
+  });
+
+  it('should handle multiple consecutive invalid chars', () => {
+    expect(sanitizeToolName('tool...name')).toBe('tool___name');
+    expect(sanitizeToolName('tool   name')).toBe('tool___name');
+  });
+
+  it('should handle unicode characters', () => {
+    expect(sanitizeToolName('工具')).toBe('unknown_tool');
+    expect(sanitizeToolName('tool_日本語')).toBe('tool');
+  });
+});
+
+describe('anthropicToOpenAI edge cases', () => {
+  it('should sanitize tool names with spaces in tool_use blocks', () => {
+    const req: AnthropicRequest = {
+      model: 'claude-3',
+      max_tokens: 1024,
+      messages: [
+        {role: 'user', content: 'Test'},
+        {role: 'assistant', content: [{
+          type: 'tool_use',
+          id: 'toolu_123',
+          name: ' Glob',
+          input: {pattern: '*.ts'},
+        }]},
+      ],
+    };
+
+    const result = anthropicToOpenAI(req);
+    const toolCalls = (result.messages[1] as {tool_calls?: {function: {name: string}}[]}).tool_calls;
+    expect(toolCalls![0].function.name).toBe('Glob');
+  });
+
+  it('should add stream_options when streaming', () => {
+    const req: AnthropicRequest = {
+      model: 'claude-3',
+      max_tokens: 1024,
+      stream: true,
+      messages: [{role: 'user', content: 'Hi'}],
+    };
+
+    const result = anthropicToOpenAI(req);
+    expect(result.stream).toBe(true);
+    expect((result as {stream_options?: {include_usage: boolean}}).stream_options).toEqual({include_usage: true});
+  });
+
+  it('should NOT add user message after tool messages', () => {
+    const req: AnthropicRequest = {
+      model: 'claude-3',
+      max_tokens: 1024,
+      messages: [
+        {role: 'user', content: 'Test'},
+        {role: 'assistant', content: [{type: 'tool_use', id: 'tool_1', name: 'bash', input: {}}]},
+        {role: 'user', content: [{type: 'tool_result', tool_use_id: 'tool_1', content: 'result'}]},
+      ],
+    };
+
+    const result = anthropicToOpenAI(req);
+    const lastMsg = result.messages[result.messages.length - 1];
+    expect(lastMsg.role).toBe('tool');
+  });
+
+  it('should add user message after assistant without tool_calls', () => {
+    const req: AnthropicRequest = {
+      model: 'claude-3',
+      max_tokens: 1024,
+      messages: [
+        {role: 'user', content: 'Hello'},
+        {role: 'assistant', content: 'Hi there'},
+      ],
+    };
+
+    const result = anthropicToOpenAI(req);
+    const lastMsg = result.messages[result.messages.length - 1];
+    expect(lastMsg.role).toBe('user');
+    expect(lastMsg.content).toBe('Continue.');
+  });
+});
+
+describe('openAIToAnthropic edge cases', () => {
+  it('should convert tool_calls to tool_use blocks', () => {
+    const res: OpenAIResponse = {
+      id: 'chatcmpl-123',
+      object: 'chat.completion',
+      created: 1234567890,
+      model: 'gpt-4',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'call_123',
+            type: 'function',
+            function: {name: 'calculator', arguments: '{"expr": "2+2"}'},
+          }],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+
+    const result = openAIToAnthropic(res, 'test-model');
+    expect(result.stop_reason).toBe('tool_use');
+    expect(result.content.some(c => c.type === 'tool_use')).toBe(true);
+  });
+
+  it('should handle malformed tool_call arguments', () => {
+    const res: OpenAIResponse = {
+      id: 'chatcmpl-123',
+      object: 'chat.completion',
+      created: 1234567890,
+      model: 'gpt-4',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'call_123',
+            type: 'function',
+            function: {name: 'test', arguments: 'not valid json'},
+          }],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+
+    const result = openAIToAnthropic(res, 'test-model');
+    const toolUse = result.content.find(c => c.type === 'tool_use') as {input: {raw?: string}};
+    expect(toolUse.input.raw).toBe('not valid json');
   });
 });
