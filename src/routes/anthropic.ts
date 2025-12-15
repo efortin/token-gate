@@ -125,8 +125,69 @@ async function anthropicRoutes(app: FastifyInstance): Promise<void> {
 }
 
 // ============================================================================
-// Streaming - Passthrough SSE
+// Streaming - SSE with message_start enrichment
 // ============================================================================
+
+/**
+ * Enriches SSE chunks to fix missing Anthropic fields in vLLM responses.
+ * vLLM message_start is missing: type, role, stop_reason, stop_sequence
+ * which Claude Code needs for proper token counting.
+ * 
+ * Also injects calculated input_tokens from the request to ensure 
+ * Claude Code displays correct token counts even with parallel requests.
+ */
+function enrichSseChunk(chunk: string, calculatedInputTokens?: number): string {
+  const lines = chunk.split('\n');
+  const outputLines: string[] = [];
+
+  for (const line of lines) {
+    if (!line.startsWith('data: ')) {
+      outputLines.push(line);
+      continue;
+    }
+
+    const dataStr = line.slice(6);
+    if (dataStr === '[DONE]') {
+      outputLines.push(line);
+      continue;
+    }
+
+    try {
+      const data = JSON.parse(dataStr);
+
+      // Enrich message_start with missing Anthropic fields and calculated tokens
+      if (data.type === 'message_start' && data.message) {
+        data.message = {
+          ...data.message,
+          type: data.message.type || 'message',
+          role: data.message.role || 'assistant',
+          stop_reason: data.message.stop_reason ?? null,
+          stop_sequence: data.message.stop_sequence ?? null,
+        };
+        // Override input_tokens with our calculated value for accurate display
+        if (calculatedInputTokens !== undefined && data.message.usage) {
+          data.message.usage.input_tokens = calculatedInputTokens;
+        }
+        outputLines.push(`data: ${JSON.stringify(data)}`);
+        continue;
+      }
+
+      // Also update message_delta usage if we have calculated tokens
+      if (data.type === 'message_delta' && data.usage && calculatedInputTokens !== undefined) {
+        data.usage.input_tokens = calculatedInputTokens;
+        outputLines.push(`data: ${JSON.stringify(data)}`);
+        continue;
+      }
+
+      outputLines.push(line);
+    } catch {
+      // Not valid JSON, pass through
+      outputLines.push(line);
+    }
+  }
+
+  return outputLines.join('\n');
+}
 
 const streamAnthropic = async (
   reply: FastifyReply,
@@ -136,10 +197,18 @@ const streamAnthropic = async (
 ) => {
   reply.raw.writeHead(200, SSE_HEADERS);
 
+  // Calculate input tokens from the request for accurate display
+  const calculatedInputTokens = calculateTokenCount(
+    body.messages as Parameters<typeof calculateTokenCount>[0],
+    body.system as Parameters<typeof calculateTokenCount>[1],
+    (body as { tools?: unknown[] }).tools as Parameters<typeof calculateTokenCount>[2],
+  );
+
   try {
     const stream = streamBackend(`${baseUrl}/v1/messages`, { ...body, stream: true }, auth);
     for await (const chunk of stream) {
-      reply.raw.write(chunk);
+      const enriched = enrichSseChunk(chunk, calculatedInputTokens);
+      reply.raw.write(enriched);
     }
   } catch (e) {
     reply.raw.write(formatSseError(e));
