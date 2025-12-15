@@ -1,6 +1,6 @@
 /**
  * Integration tests for backend compatibility.
- * Run manually with: npx tsx tests/integration/backend.integration.ts [BACKEND_URL]
+ * Run manually with: npx tsx tests/integration/backend.integration.ts [check]
  *
  * Example:
  *   npx tsx tests/integration/backend.integration.ts http://localhost:3456
