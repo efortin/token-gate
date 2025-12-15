@@ -3,10 +3,10 @@ name: Integration Tests
 on:
   workflow_dispatch:
     inputs:
-      backend-url:
-        description: 'Backend URL (e.g., http://localhost:3456)'
+      vllm-url:
+        description: 'VLLM Endpoint URL (e.g., http://localhost:8000)'
         required: true
-        default: 'http://localhost:3456'
+        default: 'http://localhost:8000'
 
 jobs:
   integration-test:
@@ -29,11 +29,12 @@ jobs:
         env:
           API_KEY: ${{ secrets.API_KEY }}
           VLLM_API_KEY: ${{ secrets.VLLM_API_KEY }}
-        run: npx tsx tests/integration/backend.integration.ts ${{ github.event.inputs.backend-url }}
+          VLLM_ENDPOINT: ${{ github.event.inputs.vllm-url }}
+        run: npx tsx tests/integration/backend.integration.ts ${{ github.event.inputs.vllm-url }}
 
       - name: Display test summary
         if: always()
         run: |
           echo "✅ Integration tests completed"
-          echo "Backend URL used: ${{ github.event.inputs.backend-url }}"
+          echo "VLLM URL used: ${{ github.event.inputs.vllm-url }}"
           echo "Test file: tests/integration/backend.integration.ts"
