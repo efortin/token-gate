@@ -1,15 +1,21 @@
 import 'dotenv/config';
-import pino from 'pino';
 
 import {buildApp} from './app.js';
 import {loadConfig} from './config.js';
 import {discoverModels, checkHealth} from './services/backend.js';
+import {createLogger, setLogger} from './utils/logger.js';
 import type {AppConfig} from './types/index.js';
-
-const logger = pino({level: 'info'});
 
 async function main(): Promise<void> {
   const rawConfig = loadConfig();
+
+  // Initialize logger with config
+  const logger = createLogger({
+    level: rawConfig.logLevel,
+    pretty: rawConfig.logPretty,
+    filePath: rawConfig.logFilePath,
+  });
+  setLogger(logger);
 
   const config: AppConfig = {
     port: rawConfig.port,
@@ -40,7 +46,7 @@ async function main(): Promise<void> {
     }
   }
 
-  const app = await buildApp({config});
+  const app = await buildApp({config, logger});
   await app.listen({host: config.host, port: config.port});
 
   logger.info(
@@ -49,12 +55,13 @@ async function main(): Promise<void> {
       port: config.port,
       backend: config.defaultBackend.url,
       model: config.defaultBackend.model,
+      logFile: rawConfig.logFilePath,
     },
     'Server started',
   );
 }
 
 main().catch((err) => {
-  logger.error({err}, 'Failed to start server');
+  console.error('Failed to start server:', err);
   process.exit(1);
 });

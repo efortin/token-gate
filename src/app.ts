@@ -1,6 +1,7 @@
 import type {FastifyInstance} from 'fastify';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import type {Logger} from 'pino';
 
 import metricsPlugin from './plugins/metrics.js';
 import anthropicRoutes from './routes/anthropic.js';
@@ -16,7 +17,7 @@ declare module 'fastify' {
 
 export interface BuildAppOptions {
   config: AppConfig;
-  logger?: boolean | object;
+  logger?: boolean | Logger;
 }
 
 /** Creates and configures the Fastify application. */
@@ -24,13 +25,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   const {config, logger = true} = options;
 
   const app = Fastify({
-    logger:
-      logger
-        ? {
-            level: config.logLevel,
-            transport: {target: 'pino-pretty', options: {colorize: true}},
-          }
-        : logger,
+    logger,
     bodyLimit: 50 * 1024 * 1024, // 50MB for base64 images
   });
 

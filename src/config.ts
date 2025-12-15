@@ -13,5 +13,7 @@ export function loadConfig(): RouterConfig {
       model: process.env.VLLM_MODEL ?? '',
     },
     logLevel: (process.env.LOG_LEVEL as RouterConfig['logLevel']) ?? 'info',
+    logPretty: process.env.LOG_PRETTY === 'true',
+    logFilePath: process.env.LOG_FILE_PATH,
   };
 }

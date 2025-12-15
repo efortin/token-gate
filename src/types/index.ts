@@ -96,6 +96,8 @@ export interface RouterConfig {
   apiKey: string;
   defaultBackend: BackendConfig;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
+  logPretty: boolean;
+  logFilePath?: string;
 }
 
 /** Application configuration used at runtime. */

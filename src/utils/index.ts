@@ -5,3 +5,5 @@ export {anthropicToOpenAI, openAIToAnthropic, injectWebSearchPrompt, normalizeOp
 export {countTokens, estimateRequestTokens, calculateTokenCount} from './tokens.js';
 export {pipe, when} from './pipeline.js';
 export type {Transformer} from './pipeline.js';
+export {createLogger, setLogger, getLogger} from './logger.js';
+export type {LoggerConfig} from './logger.js';
