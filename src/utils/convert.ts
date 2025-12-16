@@ -238,22 +238,6 @@ export function removeUnsupportedTools(req: AnthropicRequest): AnthropicRequest 
   return { ...req, tools: filteredTools };
 }
 
-/** Checks if request contains web search tools (kept for potential future use). */
-export function hasWebSearchTools(tools?: {name: string}[]): boolean {
-  if (!tools || tools.length === 0) return false;
-  const webSearchTools = [
-    'mcp__brave-search__brave_web_search',
-    'mcp__brave-search__brave_local_search',
-  ];
-  return tools.some(tool => webSearchTools.includes(tool.name));
-}
-
-/** Injects web search system prompt into an Anthropic request (disabled - MCP tools handle this). */
-export function injectWebSearchPrompt(req: AnthropicRequest): AnthropicRequest {
-  // Disabled: MCP brave-search tools don't need prompt injection
-  return req;
-}
-
 /** Converts an OpenAI response to Anthropic format. */
 export function openAIToAnthropic(res: OpenAIResponse, model: string): AnthropicResponse {
   const choice = res.choices[0];

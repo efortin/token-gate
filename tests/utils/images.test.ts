@@ -3,6 +3,7 @@ import {describe, it, expect} from 'vitest';
 import {
   getMimeType,
   isImageMimeType,
+  sanitizeToolChoice,
 } from '../../src/utils/images.js';
 
 describe('getMimeType', () => {
@@ -30,3 +31,45 @@ describe('isImageMimeType', () => {
   });
 });
 
+describe('sanitizeToolChoice', () => {
+  it('should remove tool_choice when tools array is empty', () => {
+    const body = {
+      model: 'test',
+      messages: [{role: 'user', content: 'Hi'}],
+      tool_choice: 'auto',
+      tools: [],
+    };
+    const result = sanitizeToolChoice(body);
+    expect(result.tool_choice).toBeUndefined();
+  });
+
+  it('should remove tool_choice when tools is undefined', () => {
+    const body = {
+      model: 'test',
+      messages: [{role: 'user', content: 'Hi'}],
+      tool_choice: 'auto',
+    };
+    const result = sanitizeToolChoice(body);
+    expect(result.tool_choice).toBeUndefined();
+  });
+
+  it('should keep tool_choice when tools are present', () => {
+    const body = {
+      model: 'test',
+      messages: [{role: 'user', content: 'Hi'}],
+      tool_choice: 'auto',
+      tools: [{type: 'function', function: {name: 'test'}}],
+    };
+    const result = sanitizeToolChoice(body);
+    expect(result.tool_choice).toBe('auto');
+  });
+
+  it('should return unchanged when no tool_choice', () => {
+    const body = {
+      model: 'test',
+      messages: [{role: 'user', content: 'Hi'}],
+    };
+    const result = sanitizeToolChoice(body);
+    expect(result).toEqual(body);
+  });
+});

@@ -183,6 +183,33 @@ describe('anthropicToOpenAI', () => {
     expect(result.messages[2].role).toBe('tool');
   });
 
+  it('should convert tool_result blocks with object content', () => {
+    const req: AnthropicRequest = {
+      model: 'claude-3',
+      max_tokens: 1024,
+      messages: [
+        {role: 'user', content: 'List files'},
+        {role: 'assistant', content: [{
+          type: 'tool_use',
+          id: 'toolu_abc123',
+          name: 'bash',
+          input: {command: 'ls'},
+        }]},
+        {role: 'user', content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_abc123',
+          content: [{type: 'text', text: 'file1.txt'}],
+        }]},
+      ],
+    };
+
+    const result = anthropicToOpenAI(req);
+
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[2].role).toBe('tool');
+    expect(result.messages[2].content).toContain('file1.txt');
+  });
+
   it('should NOT add user message after tool message (Mistral constraint)', () => {
     const req: AnthropicRequest = {
       model: 'claude-3',
@@ -629,6 +656,39 @@ describe('normalizeOpenAIToolIds - Mistral compatibility', () => {
     });
   });
 
+  describe('tool_call_id normalization in tool messages', () => {
+    it('should normalize tool_call_id in tool messages', () => {
+      const req = {
+        model: 'devstral',
+        messages: [
+          {role: 'user', content: 'Hello'},
+          {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+              id: 'call_very_long_id_that_needs_normalization',
+              type: 'function',
+              function: {name: 'test', arguments: '{}'},
+            }],
+          },
+          {
+            role: 'tool',
+            tool_call_id: 'call_very_long_id_that_needs_normalization',
+            content: 'result',
+          },
+        ],
+      };
+
+      const result = normalizeOpenAIToolIds(req);
+      const assistantToolCallId = result.messages[1].tool_calls[0].id;
+      const toolMessageId = result.messages[2].tool_call_id;
+      
+      // Both should be normalized to the same 9-char ID
+      expect(assistantToolCallId).toHaveLength(9);
+      expect(toolMessageId).toBe(assistantToolCallId);
+    });
+  });
+
   describe('JSON sanitization in arguments', () => {
     it('should keep valid JSON arguments unchanged', () => {
       const req = {
@@ -851,6 +911,22 @@ describe('convertOpenAIStreamToAnthropic - streaming', () => {
     const joined = results.join('');
 
     expect(joined).toContain('tool_use');
+  });
+
+  it('should handle malformed JSON in stream data', async () => {
+    const chunks = [
+      'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+      'data: {not valid json}\n\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+      'data: {"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n',
+      'data: [DONE]\n\n',
+    ];
+
+    const results = await collectStream(convertOpenAIStreamToAnthropic(mockStream(chunks), 'test-model', 10));
+    const joined = results.join('');
+
+    expect(joined).toContain('content_block_start');
+    expect(joined).toContain('message_stop');
   });
 
   it('should handle multiple tool_calls with arguments accumulation', async () => {
