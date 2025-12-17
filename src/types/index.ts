@@ -1,52 +1,16 @@
-// =============================================================================
-// Anthropic Types
-// =============================================================================
-// Note: Official SDK types available at '@anthropic-ai/sdk/resources/messages'
-// We use custom types here because:
-// 1. SDK response types require fields vLLM doesn't provide (citations, cache_creation)
-// 2. We need flexible types for proxy transformations
+// Re-export Anthropic types from dedicated file
+export {
+  AnthropicContentBlockSchema,
+  AnthropicMessageSchema,
+  AnthropicRequestSchema,
+  AnthropicResponseSchema,
+  type AnthropicContentBlock,
+  type AnthropicMessage,
+  type AnthropicRequest,
+  type AnthropicResponse,
+} from './anthropic.js';
 
-/** Anthropic message content block. */
-export interface AnthropicContentBlock {
-  type: string;
-  text?: string;
-  id?: string;
-  name?: string;
-  input?: Record<string, unknown>;
-  tool_use_id?: string;
-  content?: unknown;
-  [key: string]: unknown;
-}
 
-/** Anthropic message. */
-export interface AnthropicMessage {
-  role: 'user' | 'assistant';
-  content: string | AnthropicContentBlock[];
-}
-
-/** Anthropic API request. */
-export interface AnthropicRequest {
-  model: string;
-  messages: AnthropicMessage[];
-  max_tokens: number;
-  system?: string | { type: string; text: string }[];
-  stream?: boolean;
-  [key: string]: unknown;
-}
-
-/** Anthropic API response. */
-export interface AnthropicResponse {
-  id: string;
-  type: 'message';
-  role: 'assistant';
-  content: AnthropicContentBlock[];
-  model: string;
-  stop_reason: string | null;
-  usage: {
-    input_tokens: number;
-    output_tokens: number;
-  };
-}
 /** OpenAI message content. */
 export interface OpenAIMessageContent {
   type: string;
