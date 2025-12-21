@@ -243,7 +243,7 @@ export function ensureMistralMessageOrder(req: OpenAIRequest): OpenAIRequest {
     if (previous?.role === 'tool' && current.role === 'user') {
       result.push({
         role: 'assistant',
-        content: null,
+        content: '',  // Empty string instead of null - Mistral requires valid content
       });
     }
 
